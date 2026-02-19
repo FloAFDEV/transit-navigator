@@ -57,6 +57,25 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+        transport: {
+          bus: "hsl(var(--color-bus))",
+          metro: "hsl(var(--color-metro))",
+          tram: "hsl(var(--color-tram))",
+          train: "hsl(var(--color-train))",
+          all: "hsl(var(--color-all))",
+        },
+        friction: {
+          low: "hsl(var(--friction-low))",
+          mid: "hsl(var(--friction-mid))",
+          high: "hsl(var(--friction-high))",
+        },
+        viz: {
+          bg: "hsl(var(--viz-bg))",
+          stroke: "hsl(var(--viz-stroke))",
+          node: "hsl(var(--viz-node))",
+          edge: "hsl(var(--viz-edge))",
+          highlight: "hsl(var(--viz-highlight))",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
