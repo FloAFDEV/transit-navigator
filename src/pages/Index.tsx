@@ -3,10 +3,11 @@ import GtfsUpload from '@/components/GtfsUpload';
 import CircularDensityDiagram from '@/components/CircularDensityDiagram';
 import TransitDiagram from '@/components/TransitDiagram';
 import FrictionAnalysis from '@/components/FrictionAnalysis';
+import GlossaryPanel from '@/components/GlossaryPanel';
 import { parseGtfsZip } from '@/lib/gtfs-parser';
 import { analyzeNetwork, type AnalysisResult } from '@/lib/network-analysis';
 import type { TransportMode } from '@/lib/gtfs-types';
-import { modeLabels, modeColors } from '@/lib/gtfs-types';
+import { modeLabels } from '@/lib/gtfs-types';
 import { toast } from 'sonner';
 
 type ViewTab = 'density' | 'transit' | 'friction';
@@ -57,12 +58,15 @@ const Index: React.FC = () => {
           <h1 className="text-sm font-semibold text-foreground tracking-tight">GTFS Analyzer</h1>
           <span className="text-xs text-muted-foreground font-mono">{fileName}</span>
         </div>
-        <button
-          onClick={() => { setAnalysis(null); setFileName(''); }}
-          className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-        >
-          Nouveau fichier
-        </button>
+        <div className="flex items-center gap-3">
+          <GlossaryPanel />
+          <button
+            onClick={() => { setAnalysis(null); setFileName(''); }}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Nouveau fichier
+          </button>
+        </div>
       </header>
 
       {/* Tabs */}
