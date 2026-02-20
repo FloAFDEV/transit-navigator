@@ -10,13 +10,26 @@ import DiagramLegend from './DiagramLegend';
 
 interface Props {
   analysis: AnalysisResult;
+  selectedRouteId: string | null;
+  onSelectRoute: (routeId: string | null) => void;
 }
 
-const TransitDiagram: React.FC<Props> = ({ analysis }) => {
+const TransitDiagram: React.FC<Props> = ({ analysis, selectedRouteId, onSelectRoute }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const size = 640;
+
+  // Connected route IDs for the selected route
+  const connectedRouteIds = useMemo(() => {
+    if (!selectedRouteId) return new Set<string>();
+    const ids = new Set<string>();
+    for (const c of analysis.correspondences) {
+      if (c.routeA === selectedRouteId) ids.add(c.routeB);
+      if (c.routeB === selectedRouteId) ids.add(c.routeA);
+    }
+    return ids;
+  }, [selectedRouteId, analysis.correspondences]);
 
   const { nodes, links } = useMemo(() => {
     const nodes = analysis.routes.map(r => ({
@@ -70,22 +83,14 @@ const TransitDiagram: React.FC<Props> = ({ analysis }) => {
       .attr('stroke-opacity', (d: any) => opacityScale(d.weight))
       .attr('shape-rendering', 'geometricPrecision')
       .on('mouseenter', function (event, d: any) {
+        if (selectedRouteId) return; // Don't override selection highlights on hover
         d3.select(this).attr('stroke-opacity', 0.8).attr('stroke', 'hsl(220, 18%, 40%)');
-        if (tooltipRef.current) {
-          const srcName = nodes.find(n => n.id === (d.source.id || d.source))?.name || '';
-          const tgtName = nodes.find(n => n.id === (d.target.id || d.target))?.name || '';
-          tooltipRef.current.style.opacity = '1';
-          tooltipRef.current.style.left = `${event.offsetX + 12}px`;
-          tooltipRef.current.style.top = `${event.offsetY - 10}px`;
-          tooltipRef.current.innerHTML = `
-            <span class="font-semibold">${srcName} ↔ ${tgtName}</span><br/>
-            <span class="text-muted-foreground">${d.sharedCount} station${d.sharedCount > 1 ? 's' : ''} commune${d.sharedCount > 1 ? 's' : ''}</span>
-          `;
-        }
+        showLinkTooltip(event, d);
       })
       .on('mouseleave', function (_, d: any) {
+        if (selectedRouteId) return;
         d3.select(this).attr('stroke-opacity', opacityScale(d.weight)).attr('stroke', 'hsl(220, 10%, 72%)');
-        if (tooltipRef.current) tooltipRef.current.style.opacity = '0';
+        hideTooltip();
       });
 
     const node = g.selectAll('circle.node')
@@ -97,30 +102,32 @@ const TransitDiagram: React.FC<Props> = ({ analysis }) => {
       .attr('fill-opacity', 0.85)
       .attr('stroke', 'hsl(0, 0%, 100%)')
       .attr('stroke-width', 1.2)
-      .attr('cursor', 'grab')
+      .attr('cursor', 'pointer')
       .on('mouseenter', function (event, d: any) {
+        if (selectedRouteId) {
+          // Only show tooltip, don't change visuals
+          showNodeTooltip(event, d);
+          return;
+        }
         d3.select(this).attr('fill-opacity', 1).attr('stroke-width', 2);
-        // Highlight connected links
         link.attr('stroke-opacity', (l: any) => {
           const sId = l.source.id || l.source;
           const tId = l.target.id || l.target;
           return (sId === d.id || tId === d.id) ? 0.7 : 0.05;
         });
-        if (tooltipRef.current) {
-          tooltipRef.current.style.opacity = '1';
-          tooltipRef.current.style.left = `${event.offsetX + 12}px`;
-          tooltipRef.current.style.top = `${event.offsetY - 10}px`;
-          tooltipRef.current.innerHTML = `
-            <span class="font-semibold">${d.name}</span>
-            <span class="text-muted-foreground"> · ${modeLabels[d.mode as TransportMode]}</span><br/>
-            <span class="text-muted-foreground">${d.stopCount} arrêts · ${d.tripCount} trajets</span>
-          `;
-        }
+        showNodeTooltip(event, d);
       })
       .on('mouseleave', function () {
+        if (selectedRouteId) {
+          hideTooltip();
+          return;
+        }
         d3.select(this).attr('fill-opacity', 0.85).attr('stroke-width', 1.2);
         link.attr('stroke-opacity', (d: any) => opacityScale(d.weight));
-        if (tooltipRef.current) tooltipRef.current.style.opacity = '0';
+        hideTooltip();
+      })
+      .on('click', function (_, d: any) {
+        onSelectRoute(selectedRouteId === d.id ? null : d.id);
       });
 
     const label = g.selectAll('text.label')
@@ -166,8 +173,98 @@ const TransitDiagram: React.FC<Props> = ({ analysis }) => {
     svg.call(zoom);
     zoomRef.current = zoom;
 
+    // Store refs for selection updates
+    (svgRef.current as any).__nodeSelection = node;
+    (svgRef.current as any).__linkSelection = link;
+    (svgRef.current as any).__labelSelection = label;
+    (svgRef.current as any).__opacityScale = opacityScale;
+    (svgRef.current as any).__widthScale = widthScale;
+
     return () => { simulation.stop(); svg.on('.zoom', null); };
-  }, [nodes, links, size]);
+  }, [nodes, links, size]); // intentionally exclude selectedRouteId to avoid re-creating simulation
+
+  // Update visual selection state without re-running simulation
+  useEffect(() => {
+    if (!svgRef.current) return;
+    const el = svgRef.current as any;
+    const node = el.__nodeSelection;
+    const link = el.__linkSelection;
+    const label = el.__labelSelection;
+    const opacityScale = el.__opacityScale;
+    if (!node || !link) return;
+
+    if (selectedRouteId) {
+      node
+        .attr('fill-opacity', (d: any) => {
+          if (d.id === selectedRouteId) return 1;
+          if (connectedRouteIds.has(d.id)) return 0.7;
+          return 0.15;
+        })
+        .attr('stroke-width', (d: any) => d.id === selectedRouteId ? 3 : 1.2)
+        .attr('stroke', (d: any) => d.id === selectedRouteId ? 'hsl(220, 20%, 20%)' : 'hsl(0, 0%, 100%)');
+
+      link
+        .attr('stroke-opacity', (l: any) => {
+          const sId = l.source.id || l.source;
+          const tId = l.target.id || l.target;
+          if (sId === selectedRouteId || tId === selectedRouteId) return 0.7;
+          return 0.03;
+        })
+        .attr('stroke', (l: any) => {
+          const sId = l.source.id || l.source;
+          const tId = l.target.id || l.target;
+          if (sId === selectedRouteId || tId === selectedRouteId) return 'hsl(220, 18%, 40%)';
+          return 'hsl(220, 10%, 72%)';
+        });
+
+      if (label) {
+        label.attr('fill-opacity', (d: any) => {
+          if (d.id === selectedRouteId) return 1;
+          if (connectedRouteIds.has(d.id)) return 0.6;
+          return 0.1;
+        });
+      }
+    } else {
+      // Reset to defaults
+      node.attr('fill-opacity', 0.85).attr('stroke-width', 1.2).attr('stroke', 'hsl(0, 0%, 100%)');
+      link
+        .attr('stroke-opacity', (d: any) => opacityScale ? opacityScale(d.weight) : 0.3)
+        .attr('stroke', 'hsl(220, 10%, 72%)');
+      if (label) label.attr('fill-opacity', 0.7);
+    }
+  }, [selectedRouteId, connectedRouteIds]);
+
+  const showNodeTooltip = useCallback((event: any, d: any) => {
+    if (tooltipRef.current) {
+      tooltipRef.current.style.opacity = '1';
+      tooltipRef.current.style.left = `${event.offsetX + 12}px`;
+      tooltipRef.current.style.top = `${event.offsetY - 10}px`;
+      tooltipRef.current.innerHTML = `
+        <span class="font-semibold">${d.name}</span>
+        <span class="text-muted-foreground"> · ${modeLabels[d.mode as TransportMode]}</span><br/>
+        <span class="text-muted-foreground">${d.stopCount} arrêts · ${d.tripCount} trajets</span>
+        <br/><span class="text-muted-foreground text-[10px]">Cliquer pour ${selectedRouteId === d.id ? 'désélectionner' : 'sélectionner'}</span>
+      `;
+    }
+  }, [selectedRouteId]);
+
+  const showLinkTooltip = useCallback((event: any, d: any) => {
+    if (tooltipRef.current) {
+      const srcName = nodes.find(n => n.id === (d.source.id || d.source))?.name || '';
+      const tgtName = nodes.find(n => n.id === (d.target.id || d.target))?.name || '';
+      tooltipRef.current.style.opacity = '1';
+      tooltipRef.current.style.left = `${event.offsetX + 12}px`;
+      tooltipRef.current.style.top = `${event.offsetY - 10}px`;
+      tooltipRef.current.innerHTML = `
+        <span class="font-semibold">${srcName} ↔ ${tgtName}</span><br/>
+        <span class="text-muted-foreground">${d.sharedCount} station${d.sharedCount > 1 ? 's' : ''} commune${d.sharedCount > 1 ? 's' : ''}</span>
+      `;
+    }
+  }, [nodes]);
+
+  const hideTooltip = useCallback(() => {
+    if (tooltipRef.current) tooltipRef.current.style.opacity = '0';
+  }, []);
 
   const resetZoom = useCallback(() => {
     if (svgRef.current && zoomRef.current) {
@@ -181,7 +278,6 @@ const TransitDiagram: React.FC<Props> = ({ analysis }) => {
     if (svgRef.current && zoomRef.current) d3.select(svgRef.current).transition().duration(300).call(zoomRef.current.scaleBy, 0.67);
   }, []);
 
-  // Legend
   const modes = useMemo(() => {
     const seen = new Set<TransportMode>();
     analysis.routes.forEach(r => seen.add(r.mode));
@@ -192,9 +288,9 @@ const TransitDiagram: React.FC<Props> = ({ analysis }) => {
     <div className="flex flex-col items-center gap-4">
       <HowToRead
         title="Diagramme de correspondances"
-        what="Chaque cercle (nœud) représente une ligne de transport. Les traits entre eux montrent les correspondances : deux lignes sont reliées si elles partagent au moins une station. L'épaisseur du trait indique le nombre de stations partagées."
-        deduce="Les nœuds très connectés sont des lignes structurantes du réseau. Les clusters de nœuds reliés révèlent des sous-réseaux cohérents. Une ligne isolée peut signaler un défaut de maillage."
-        caution="La position des nœuds est calculée par un algorithme de force et ne représente pas la géographie. Seules les 200 correspondances les plus fortes sont affichées. Le nombre de trajets n'est pas reflété ici."
+        what="Chaque cercle (nœud) représente une ligne de transport. Les traits entre eux montrent les correspondances : deux lignes sont reliées si elles partagent au moins une station (dans un rayon de 50m). L'épaisseur du trait indique le nombre de stations partagées."
+        deduce="Les nœuds très connectés sont des lignes structurantes du réseau. Les clusters de nœuds reliés révèlent des sous-réseaux cohérents. Une ligne isolée peut signaler un défaut de maillage. Cliquez sur un nœud pour explorer ses détails."
+        caution="La position des nœuds est calculée par un algorithme de force et ne représente pas la géographie. Seules les 200 correspondances les plus fortes sont affichées."
       />
 
       <div className="flex gap-4 items-start">
@@ -239,16 +335,18 @@ const TransitDiagram: React.FC<Props> = ({ analysis }) => {
           title="Légende"
           items={modes.map(m => ({ color: modeColors[m], label: modeLabels[m] }))}
           notes={[
-            'Taille du nœud = nombre d\'arrêts de la ligne',
+            'Taille du nœud = nombre d\'arrêts',
             'Épaisseur du lien = stations communes',
-            'Opacité du lien = force de la correspondance',
+            'Cliquer un nœud = sélectionner la ligne',
             'Glisser un nœud pour réorganiser',
           ]}
         />
       </div>
 
       <div className="text-xs text-muted-foreground font-mono">
-        {nodes.length} lignes · {links.length} correspondances · molette pour zoomer
+        {nodes.length} lignes · {links.length} correspondances
+        {selectedRouteId && ' · ligne sélectionnée'}
+        {' · molette pour zoomer'}
       </div>
     </div>
   );

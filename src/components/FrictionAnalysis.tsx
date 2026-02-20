@@ -1,13 +1,16 @@
 import React from 'react';
 import type { AnalysisResult } from '@/lib/network-analysis';
+import { modeColors } from '@/lib/gtfs-types';
 import HowToRead from './HowToRead';
 import InfoTooltip from './InfoTooltip';
 
 interface Props {
   analysis: AnalysisResult;
+  selectedRouteId: string | null;
+  onSelectRoute: (routeId: string | null) => void;
 }
 
-const FrictionAnalysis: React.FC<Props> = ({ analysis }) => {
+const FrictionAnalysis: React.FC<Props> = ({ analysis, selectedRouteId, onSelectRoute }) => {
   const { stationMetrics, networkMetrics, routes } = analysis;
   const topStations = stationMetrics.slice(0, 15);
 
@@ -40,13 +43,20 @@ const FrictionAnalysis: React.FC<Props> = ({ analysis }) => {
 
   const maxFriction = topStations[0]?.frictionIndex || 1;
 
+  const routeRowClass = (routeId: string) =>
+    `flex items-center gap-3 py-1.5 text-sm cursor-pointer rounded-sm px-1 transition-colors ${
+      selectedRouteId === routeId
+        ? 'bg-primary/10 ring-1 ring-primary/30'
+        : 'hover:bg-secondary/50'
+    }`;
+
   return (
     <div className="space-y-8 max-w-4xl mx-auto">
       <HowToRead
         title="Analyse de friction du réseau"
         what="Cette vue présente des indicateurs quantitatifs sur la structure du réseau : friction aux stations, surcharge des lignes, et zones sous-desservies. Les couleurs (vert/orange/rouge) indiquent le niveau d'intensité."
-        deduce="Les stations à forte friction sont des nœuds critiques où de nombreuses correspondances se croisent. Les lignes surchargées portent une grande part des connexions du réseau. Les lignes sous-desservies ont peu de correspondances par rapport à leur nombre d'arrêts."
-        caution="Un indice de friction élevé n'est pas nécessairement négatif : il peut refléter un hub bien conçu. Ces indicateurs doivent être croisés avec des données de fréquentation réelle pour orienter les décisions."
+        deduce="Les stations à forte friction sont des nœuds critiques où de nombreuses correspondances se croisent. Les lignes surchargées portent une grande part des connexions du réseau. Cliquez sur une ligne pour voir ses détails."
+        caution="Un indice de friction élevé n'est pas nécessairement négatif : il peut refléter un hub bien conçu. Ces indicateurs doivent être croisés avec des données de fréquentation réelle."
       />
 
       {/* Network-level metrics */}
@@ -97,11 +107,19 @@ const FrictionAnalysis: React.FC<Props> = ({ analysis }) => {
           Lignes surchargées
         </h3>
         <p className="text-xs text-muted-foreground mb-3">
-          Lignes concentrant le plus grand nombre de connexions avec le reste du réseau.
+          Lignes concentrant le plus grand nombre de connexions. Cliquez pour sélectionner.
         </p>
         <div className="space-y-1">
           {topRoutes.map(r => (
-            <div key={r.routeId} className="flex items-center gap-3 py-1.5 text-sm">
+            <div
+              key={r.routeId}
+              className={routeRowClass(r.routeId)}
+              onClick={() => onSelectRoute(selectedRouteId === r.routeId ? null : r.routeId)}
+            >
+              <span
+                className="w-2 h-2 rounded-full flex-shrink-0"
+                style={{ backgroundColor: r.color || modeColors[r.mode] }}
+              />
               <span className="font-mono text-xs font-medium text-foreground w-16 truncate">
                 {r.name}
               </span>
@@ -126,11 +144,19 @@ const FrictionAnalysis: React.FC<Props> = ({ analysis }) => {
           <InfoTooltip term="Zone sous-desservie" />
         </h3>
         <p className="text-xs text-muted-foreground mb-3">
-          Lignes ayant le ratio correspondances/arrêts le plus faible — potentiel d'amélioration du maillage.
+          Lignes ayant le ratio correspondances/arrêts le plus faible. Cliquez pour sélectionner.
         </p>
         <div className="space-y-1">
           {underServed.map(r => (
-            <div key={r.routeId} className="flex items-center gap-3 py-1.5 text-sm">
+            <div
+              key={r.routeId}
+              className={routeRowClass(r.routeId)}
+              onClick={() => onSelectRoute(selectedRouteId === r.routeId ? null : r.routeId)}
+            >
+              <span
+                className="w-2 h-2 rounded-full flex-shrink-0"
+                style={{ backgroundColor: r.color || modeColors[r.mode] }}
+              />
               <span className="font-mono text-xs font-medium text-foreground w-16 truncate">
                 {r.name}
               </span>
