@@ -1,9 +1,10 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import GtfsUpload from '@/components/GtfsUpload';
 import CircularDensityDiagram from '@/components/CircularDensityDiagram';
 import TransitDiagram from '@/components/TransitDiagram';
 import FrictionAnalysis from '@/components/FrictionAnalysis';
 import GlossaryPanel from '@/components/GlossaryPanel';
+import PdfExportButton from '@/components/PdfExportButton';
 import { parseGtfsZip } from '@/lib/gtfs-parser';
 import { analyzeNetwork, type AnalysisResult } from '@/lib/network-analysis';
 import type { TransportMode } from '@/lib/gtfs-types';
@@ -18,6 +19,9 @@ const Index: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ViewTab>('density');
   const [filterMode, setFilterMode] = useState<TransportMode | 'all'>('all');
   const [fileName, setFileName] = useState('');
+  const densityRef = useRef<HTMLDivElement>(null);
+  const transitRef = useRef<HTMLDivElement>(null);
+  const frictionRef = useRef<HTMLDivElement>(null);
 
   const handleFile = useCallback(async (file: File) => {
     setIsLoading(true);
@@ -60,6 +64,13 @@ const Index: React.FC = () => {
         </div>
         <div className="flex items-center gap-3">
           <GlossaryPanel />
+          <PdfExportButton
+            analysis={analysis}
+            fileName={fileName}
+            densityRef={densityRef}
+            transitRef={transitRef}
+            frictionRef={frictionRef}
+          />
           <button
             onClick={() => { setAnalysis(null); setFileName(''); }}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
@@ -108,15 +119,15 @@ const Index: React.FC = () => {
           </div>
         )}
 
-        {activeTab === 'density' && (
+        <div ref={densityRef} style={{ display: activeTab === 'density' ? 'block' : 'none' }}>
           <CircularDensityDiagram analysis={analysis} filterMode={filterMode} />
-        )}
-        {activeTab === 'transit' && (
+        </div>
+        <div ref={transitRef} style={{ display: activeTab === 'transit' ? 'block' : 'none' }}>
           <TransitDiagram analysis={analysis} />
-        )}
-        {activeTab === 'friction' && (
+        </div>
+        <div ref={frictionRef} style={{ display: activeTab === 'friction' ? 'block' : 'none' }}>
           <FrictionAnalysis analysis={analysis} />
-        )}
+        </div>
       </main>
     </div>
   );
