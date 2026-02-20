@@ -52,7 +52,7 @@ const Index: React.FC = () => {
     { key: 'friction', label: 'Analyse friction' },
   ];
 
-  const modes: (TransportMode | 'all')[] = ['all', 'bus', 'metro', 'tram', 'train'];
+  const modes: (TransportMode | 'all')[] = ['all', 'bus', 'metro', 'tram', 'train', 'cable'];
 
   return (
     <div className="min-h-screen bg-background">
