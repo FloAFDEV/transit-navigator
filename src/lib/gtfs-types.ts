@@ -30,7 +30,7 @@ export interface GtfsStop {
   stop_lon: number;
 }
 
-export type TransportMode = 'bus' | 'metro' | 'tram' | 'train';
+export type TransportMode = 'bus' | 'metro' | 'tram' | 'train' | 'cable';
 
 export interface ParsedGtfs {
   routes: GtfsRoute[];
@@ -46,6 +46,9 @@ export function routeTypeToMode(routeType: number): TransportMode {
     case 1: return 'metro';
     case 2: return 'train';
     case 3: return 'bus';
+    case 5: // Cable tram
+    case 6: // Gondola / Aerial lift (Téléo)
+    case 7: return 'cable'; // Funicular
     default: return 'bus';
   }
 }
@@ -56,6 +59,7 @@ export const modeColors: Record<TransportMode, string> = {
   metro: 'hsl(0, 72%, 51%)',
   tram: 'hsl(38, 92%, 50%)',
   train: 'hsl(234, 62%, 50%)',
+  cable: 'hsl(280, 60%, 50%)',
 };
 
 export const modeLabels: Record<TransportMode, string> = {
@@ -63,4 +67,5 @@ export const modeLabels: Record<TransportMode, string> = {
   metro: 'Métro',
   tram: 'Tram',
   train: 'Train',
+  cable: 'Téléo / Câble',
 };

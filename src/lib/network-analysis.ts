@@ -1,5 +1,6 @@
 /**
  * Network analysis: correspondences, friction, centrality
+ * Uses proximity-based correspondence detection (50m radius)
  */
 import type { ParsedGtfs, TransportMode } from './gtfs-types';
 import { routeTypeToMode } from './gtfs-types';
@@ -47,8 +48,57 @@ export interface AnalysisResult {
   networkMetrics: NetworkMetrics;
 }
 
+/** Haversine distance in meters between two lat/lon points */
+function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6_371_000; // Earth radius in meters
+  const toRad = (deg: number) => deg * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+const PROXIMITY_RADIUS_M = 50;
+
+/**
+ * Build clusters of stops that are within PROXIMITY_RADIUS_M of each other.
+ * Returns a map: stop_id → cluster_id
+ */
+function buildStopClusters(stops: ParsedGtfs['stops']): Map<string, string> {
+  const stopCluster = new Map<string, string>();
+  const clusters: string[][] = [];
+
+  for (const stop of stops) {
+    if (stop.stop_lat === 0 && stop.stop_lon === 0) continue;
+    let assigned = false;
+
+    for (const cluster of clusters) {
+      // Check distance to the first stop in the cluster (representative)
+      const rep = stops.find(s => s.stop_id === cluster[0]);
+      if (!rep) continue;
+      if (haversineMeters(stop.stop_lat, stop.stop_lon, rep.stop_lat, rep.stop_lon) <= PROXIMITY_RADIUS_M) {
+        cluster.push(stop.stop_id);
+        stopCluster.set(stop.stop_id, cluster[0]); // cluster id = first stop id
+        assigned = true;
+        break;
+      }
+    }
+
+    if (!assigned) {
+      clusters.push([stop.stop_id]);
+      stopCluster.set(stop.stop_id, stop.stop_id);
+    }
+  }
+
+  return stopCluster;
+}
+
 /** Build full network analysis from parsed GTFS data */
 export function analyzeNetwork(gtfs: ParsedGtfs): AnalysisResult {
+  // 0. Build proximity clusters
+  const stopCluster = buildStopClusters(gtfs.stops);
+
   // 1. Build route info with stops per route
   const routeMap = new Map<string, RouteInfo>();
   const tripToRoute = new Map<string, string>();
@@ -71,8 +121,8 @@ export function analyzeNetwork(gtfs: ParsedGtfs): AnalysisResult {
     if (ri) ri.tripCount++;
   }
   
-  // Map stops to routes
-  const stopToRoutes = new Map<string, Set<string>>();
+  // Map stops to routes using cluster IDs for proximity matching
+  const clusterToRoutes = new Map<string, Set<string>>();
   
   for (const st of gtfs.stopTimes) {
     const routeId = tripToRoute.get(st.trip_id);
@@ -81,10 +131,11 @@ export function analyzeNetwork(gtfs: ParsedGtfs): AnalysisResult {
     const ri = routeMap.get(routeId);
     if (ri) ri.stops.add(st.stop_id);
     
-    if (!stopToRoutes.has(st.stop_id)) {
-      stopToRoutes.set(st.stop_id, new Set());
+    const clusterId = stopCluster.get(st.stop_id) || st.stop_id;
+    if (!clusterToRoutes.has(clusterId)) {
+      clusterToRoutes.set(clusterId, new Set());
     }
-    stopToRoutes.get(st.stop_id)!.add(routeId);
+    clusterToRoutes.get(clusterId)!.add(routeId);
   }
   
   // Update stop counts
@@ -94,16 +145,16 @@ export function analyzeNetwork(gtfs: ParsedGtfs): AnalysisResult {
   
   const routes = Array.from(routeMap.values()).filter(r => r.stopCount > 0);
   
-  // 2. Find correspondences (routes sharing stops)
+  // 2. Find correspondences using proximity clusters
   const corrMap = new Map<string, Set<string>>();
   
-  for (const [stopId, routeIds] of stopToRoutes.entries()) {
+  for (const [clusterId, routeIds] of clusterToRoutes.entries()) {
     const arr = Array.from(routeIds);
     for (let i = 0; i < arr.length; i++) {
       for (let j = i + 1; j < arr.length; j++) {
         const key = [arr[i], arr[j]].sort().join('|||');
         if (!corrMap.has(key)) corrMap.set(key, new Set());
-        corrMap.get(key)!.add(stopId);
+        corrMap.get(key)!.add(clusterId);
       }
     }
   }
@@ -118,31 +169,29 @@ export function analyzeNetwork(gtfs: ParsedGtfs): AnalysisResult {
     };
   });
   
-  // 3. Station metrics
+  // 3. Station metrics (using clusters)
   const stopNameMap = new Map(gtfs.stops.map(s => [s.stop_id, s.stop_name]));
   
-  // Calculate degree for each stop (number of routes)
   const stationMetrics: StationMetrics[] = [];
   
-  for (const [stopId, routeIds] of stopToRoutes.entries()) {
+  for (const [clusterId, routeIds] of clusterToRoutes.entries()) {
     const routeCount = routeIds.size;
     if (routeCount < 1) continue;
     
-    // Correspondences = number of route pairs at this stop
     const corr = (routeCount * (routeCount - 1)) / 2;
     
     stationMetrics.push({
-      stopId,
-      stopName: stopNameMap.get(stopId) || stopId,
+      stopId: clusterId,
+      stopName: stopNameMap.get(clusterId) || clusterId,
       routeCount,
       correspondences: corr,
       degree: routeCount,
-      betweenness: 0, // Will compute simplified betweenness below
+      betweenness: 0,
       frictionIndex: routeCount > 0 ? corr / routeCount : 0,
     });
   }
   
-  // Simplified betweenness: proportion of routes going through this stop
+  // Simplified betweenness
   const totalRouteCount = routes.length;
   for (const sm of stationMetrics) {
     sm.betweenness = totalRouteCount > 0 ? sm.routeCount / totalRouteCount : 0;
@@ -157,11 +206,9 @@ export function analyzeNetwork(gtfs: ParsedGtfs): AnalysisResult {
     ? stationMetrics.reduce((s, m) => s + m.frictionIndex, 0) / stationMetrics.length
     : 0;
   
-  // Redundancy: ratio of correspondences to possible correspondences
   const maxCorr = (routes.length * (routes.length - 1)) / 2;
   const networkRedundancy = maxCorr > 0 ? correspondences.length / maxCorr : 0;
   
-  // Readability: inverse of average friction normalized
   const maxFriction = Math.max(...stationMetrics.map(m => m.frictionIndex), 1);
   const readabilityScore = Math.max(0, 1 - avgFriction / maxFriction);
   
@@ -171,7 +218,7 @@ export function analyzeNetwork(gtfs: ParsedGtfs): AnalysisResult {
     stationMetrics,
     networkMetrics: {
       totalRoutes: routes.length,
-      totalStops: stopToRoutes.size,
+      totalStops: clusterToRoutes.size,
       totalCorrespondences,
       averageFriction: avgFriction,
       networkRedundancy,
