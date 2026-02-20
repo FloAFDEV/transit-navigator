@@ -11,9 +11,11 @@ import DiagramLegend from './DiagramLegend';
 interface Props {
   analysis: AnalysisResult;
   filterMode: TransportMode | 'all';
+  selectedRouteId: string | null;
+  onSelectRoute: (routeId: string | null) => void;
 }
 
-const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode }) => {
+const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode, selectedRouteId, onSelectRoute }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -27,12 +29,10 @@ const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode }) => {
     return analysis.routes.filter(r => r.mode === filterMode);
   }, [analysis.routes, filterMode]);
 
-  // Deterministic seed for positions (avoid random jump on re-render)
   const routePositions = useMemo(() => {
     return filteredRoutes.map((route, i) => {
       const n = filteredRoutes.length;
       const angle = (i / n) * Math.PI;
-      // Use route name hash for deterministic offset
       let hash = 0;
       for (let c = 0; c < route.routeId.length; c++) {
         hash = ((hash << 5) - hash + route.routeId.charCodeAt(c)) | 0;
@@ -55,16 +55,11 @@ const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode }) => {
   useEffect(() => {
     if (!svgRef.current) return;
     const svg = d3.select(svgRef.current);
-
-    // Remove previous content group, keep defs
     svg.selectAll('g.content').remove();
     const content = svg.append('g').attr('class', 'content');
 
-    // Circle border
     content.append('circle')
-      .attr('cx', cx)
-      .attr('cy', cy)
-      .attr('r', radius)
+      .attr('cx', cx).attr('cy', cy).attr('r', radius)
       .attr('fill', 'none')
       .attr('stroke', 'hsl(220, 14%, 82%)')
       .attr('stroke-width', 1.2);
@@ -85,8 +80,11 @@ const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode }) => {
         .attr('stroke-linecap', 'round')
         .attr('shape-rendering', 'geometricPrecision')
         .attr('data-route', route.routeId)
+        .attr('cursor', 'pointer')
         .on('mouseenter', function (event) {
-          d3.select(this).attr('stroke-opacity', 1).attr('stroke-width', strokeW * 2.5);
+          if (!selectedRouteId) {
+            d3.select(this).attr('stroke-opacity', 1).attr('stroke-width', strokeW * 2.5);
+          }
           if (tooltipRef.current) {
             tooltipRef.current.style.opacity = '1';
             tooltipRef.current.style.left = `${event.offsetX + 12}px`;
@@ -95,71 +93,95 @@ const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode }) => {
               <span class="font-semibold">${route.name}</span>
               <span class="text-muted-foreground"> · ${modeLabels[route.mode]}</span>
               <br/><span class="text-muted-foreground">${route.stopCount} arrêts · ${route.tripCount} trajets</span>
+              <br/><span class="text-muted-foreground text-[10px]">Cliquer pour ${selectedRouteId === route.routeId ? 'désélectionner' : 'sélectionner'}</span>
             `;
           }
         })
         .on('mouseleave', function () {
-          d3.select(this).attr('stroke-opacity', baseOpacity).attr('stroke-width', strokeW);
+          if (!selectedRouteId) {
+            d3.select(this).attr('stroke-opacity', baseOpacity).attr('stroke-width', strokeW);
+          }
           if (tooltipRef.current) tooltipRef.current.style.opacity = '0';
+        })
+        .on('click', function () {
+          onSelectRoute(selectedRouteId === route.routeId ? null : route.routeId);
         });
     });
 
-    // Zoom behavior
+    // Store for selection updates
+    (svgRef.current as any).__contentGroup = content;
+    (svgRef.current as any).__strokeW = strokeW;
+    (svgRef.current as any).__baseOpacity = baseOpacity;
+
     const zoom = d3.zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.5, 8])
       .on('zoom', (event) => {
         content.attr('transform', event.transform.toString());
       });
-
     svg.call(zoom);
     zoomRef.current = zoom;
 
     return () => { svg.on('.zoom', null); };
   }, [routePositions, cx, cy, radius]);
 
+  // Update selection visuals without re-creating content
+  useEffect(() => {
+    if (!svgRef.current) return;
+    const el = svgRef.current as any;
+    const content = el.__contentGroup as d3.Selection<SVGGElement, unknown, null, undefined> | undefined;
+    const strokeW = el.__strokeW as number;
+    const baseOpacity = el.__baseOpacity as number;
+    if (!content) return;
+
+    content.selectAll('line').each(function () {
+      const line = d3.select(this);
+      const routeId = line.attr('data-route');
+      if (!routeId) return;
+
+      if (selectedRouteId) {
+        if (routeId === selectedRouteId) {
+          line.attr('stroke-opacity', 1).attr('stroke-width', strokeW * 3);
+        } else {
+          line.attr('stroke-opacity', 0.08).attr('stroke-width', strokeW);
+        }
+      } else {
+        line.attr('stroke-opacity', baseOpacity).attr('stroke-width', strokeW);
+      }
+    });
+  }, [selectedRouteId]);
+
   const resetZoom = useCallback(() => {
     if (svgRef.current && zoomRef.current) {
-      d3.select(svgRef.current)
-        .transition().duration(400)
-        .call(zoomRef.current.transform, d3.zoomIdentity);
+      d3.select(svgRef.current).transition().duration(400).call(zoomRef.current.transform, d3.zoomIdentity);
     }
   }, []);
-
   const zoomIn = useCallback(() => {
-    if (svgRef.current && zoomRef.current) {
-      d3.select(svgRef.current).transition().duration(300).call(zoomRef.current.scaleBy, 1.5);
-    }
+    if (svgRef.current && zoomRef.current) d3.select(svgRef.current).transition().duration(300).call(zoomRef.current.scaleBy, 1.5);
   }, []);
-
   const zoomOut = useCallback(() => {
-    if (svgRef.current && zoomRef.current) {
-      d3.select(svgRef.current).transition().duration(300).call(zoomRef.current.scaleBy, 0.67);
-    }
+    if (svgRef.current && zoomRef.current) d3.select(svgRef.current).transition().duration(300).call(zoomRef.current.scaleBy, 0.67);
   }, []);
 
-  // Legend items based on active filter
   const legendItems = useMemo(() => {
     if (filterMode === 'all') {
-      return (['bus', 'metro', 'tram', 'train'] as TransportMode[]).map(m => ({
-        color: modeColors[m],
-        label: modeLabels[m],
-      }));
+      return (['bus', 'metro', 'tram', 'train', 'cable'] as TransportMode[])
+        .filter(m => analysis.routes.some(r => r.mode === m))
+        .map(m => ({ color: modeColors[m], label: modeLabels[m] }));
     }
     return [{ color: modeColors[filterMode], label: modeLabels[filterMode] }];
-  }, [filterMode]);
+  }, [filterMode, analysis.routes]);
 
   return (
     <div className="flex flex-col items-center gap-4">
       <HowToRead
         title="Diagramme circulaire de densité"
         what="Chaque trait droit traversant le cercle représente une ligne de transport. Plus le cercle est rempli de traits, plus le réseau est dense pour le mode sélectionné."
-        deduce="Un cercle très rempli indique un réseau dense avec de nombreuses lignes. Comparer les modes (bus, métro, etc.) permet de voir lequel domine le réseau. L'encombrement visuel reflète la complexité structurelle."
-        caution="Ce diagramme ne représente pas la géographie réelle. La position des traits n'indique pas le tracé des lignes. Il sert uniquement à comparer la densité relative entre modes ou entre réseaux."
+        deduce="Un cercle très rempli indique un réseau dense avec de nombreuses lignes. Comparer les modes permet de voir lequel domine. Cliquez sur un trait pour explorer la ligne en détail."
+        caution="Ce diagramme ne représente pas la géographie réelle. La position des traits n'indique pas le tracé des lignes."
       />
 
       <div className="flex gap-4 items-start">
         <div className="viz-container p-4 relative" style={{ touchAction: 'none' }}>
-          {/* Zoom controls */}
           <div className="absolute top-3 left-3 flex flex-col gap-1 z-10">
             <button onClick={zoomIn} className="p-1.5 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors" title="Zoom +">
               <ZoomIn className="w-3.5 h-3.5" />
@@ -180,7 +202,6 @@ const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode }) => {
             <Download className="w-3.5 h-3.5" />
           </button>
 
-          {/* Tooltip */}
           <div
             ref={tooltipRef}
             className="absolute pointer-events-none bg-card border border-border rounded-md px-3 py-2 text-xs shadow-md opacity-0 transition-opacity z-20 max-w-xs"
@@ -202,8 +223,8 @@ const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode }) => {
           items={legendItems}
           notes={[
             'Chaque trait = une ligne de transport',
-            'Épaisseur uniforme, opacité adaptée à la densité',
-            'Survoler un trait pour voir les détails',
+            'Cliquer un trait = sélectionner la ligne',
+            'Survoler pour voir les détails',
           ]}
         />
       </div>
@@ -211,7 +232,8 @@ const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode }) => {
       <div className="text-xs text-muted-foreground font-mono">
         {filteredRoutes.length} ligne{filteredRoutes.length !== 1 ? 's' : ''}
         {filterMode !== 'all' && ` · ${modeLabels[filterMode]}`}
-        {' · molette pour zoomer · cliquer-glisser pour déplacer'}
+        {selectedRouteId && ' · ligne sélectionnée'}
+        {' · molette pour zoomer'}
       </div>
     </div>
   );
