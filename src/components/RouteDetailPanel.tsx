@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { AnalysisResult, RouteInfo } from '@/lib/network-analysis';
 import { modeColors, modeLabels } from '@/lib/gtfs-types';
-import { X } from 'lucide-react';
+import { X, Download, ChevronDown, ChevronRight } from 'lucide-react';
 import InfoTooltip from './InfoTooltip';
+import { exportRouteStationsCsv, exportRouteCorrespondencesCsv } from '@/lib/csv-export';
 
 interface Props {
   routeId: string;
@@ -11,21 +12,25 @@ interface Props {
 }
 
 const RouteDetailPanel: React.FC<Props> = ({ routeId, analysis, onClose }) => {
+  const [showStations, setShowStations] = useState(false);
   const route = analysis.routes.find(r => r.routeId === routeId);
   if (!route) return null;
 
-  // Correspondences for this route
   const routeCorrespondences = analysis.correspondences
     .filter(c => c.routeA === routeId || c.routeB === routeId)
     .sort((a, b) => b.weight - a.weight);
 
   const totalCorrespondenceWeight = routeCorrespondences.reduce((s, c) => s + c.weight, 0);
 
-  // Connected routes
   const connectedRoutes = routeCorrespondences.map(c => {
     const otherId = c.routeA === routeId ? c.routeB : c.routeA;
     const otherRoute = analysis.routes.find(r => r.routeId === otherId);
-    return { route: otherRoute, sharedStops: c.sharedStops.length, weight: c.weight };
+    // Find station names for shared stops
+    const stationNames = c.sharedStops.map(sid => {
+      const sm = analysis.stationMetrics.find(s => s.stopId === sid);
+      return sm?.stopName || sid;
+    });
+    return { route: otherRoute, sharedStops: c.sharedStops.length, weight: c.weight, stationNames };
   }).filter(cr => cr.route);
 
   // Analytical metrics
@@ -36,26 +41,22 @@ const RouteDetailPanel: React.FC<Props> = ({ routeId, analysis, onClose }) => {
   }
   const myConnections = allConnectionCounts.get(routeId) || 0;
   const maxConnections = Math.max(...Array.from(allConnectionCounts.values()), 1);
-
-  // Complexity: ratio of correspondences to stops
   const complexityIndex = route.stopCount > 0 ? totalCorrespondenceWeight / route.stopCount : 0;
-
-  // Friction: average friction of stations this route passes through
-  const routeStationMetrics = analysis.stationMetrics.filter(sm => {
-    // Check if any cluster this route uses matches
-    return routeCorrespondences.some(c =>
-      c.sharedStops.some(s => s === sm.stopId)
-    ) || sm.routeCount > 0;
-  });
-
-  // Centrality: proportion of network correspondences involving this route
   const totalNetworkCorr = analysis.correspondences.length;
   const centrality = totalNetworkCorr > 0 ? routeCorrespondences.length / totalNetworkCorr : 0;
-
-  // Redundancy: how many alternative paths exist (connected routes / total routes)
   const redundancy = analysis.routes.length > 1 ? connectedRoutes.length / (analysis.routes.length - 1) : 0;
 
-  // Critical stations: stations with high centrality on this route
+  // Station list from route stops
+  const stationList = Array.from(route.stops).map(stopId => {
+    const sm = analysis.stationMetrics.find(s => s.stopId === stopId);
+    return {
+      stopId,
+      name: sm?.stopName || stopId,
+      routeCount: sm?.routeCount ?? 0,
+      friction: sm?.frictionIndex ?? 0,
+    };
+  }).sort((a, b) => b.routeCount - a.routeCount);
+
   const criticalStations = analysis.stationMetrics
     .filter(sm => sm.routeCount >= 2)
     .slice(0, 8);
@@ -67,18 +68,11 @@ const RouteDetailPanel: React.FC<Props> = ({ routeId, analysis, onClose }) => {
       {/* Header */}
       <div className="sticky top-0 bg-card border-b border-border px-4 py-3 flex items-center justify-between z-10">
         <div className="flex items-center gap-2 min-w-0">
-          <span
-            className="w-3 h-3 rounded-full flex-shrink-0"
-            style={{ backgroundColor: color }}
-          />
+          <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
           <span className="text-sm font-semibold text-foreground truncate">{route.name}</span>
           <span className="text-xs text-muted-foreground flex-shrink-0">{modeLabels[route.mode]}</span>
         </div>
-        <button
-          onClick={onClose}
-          className="p-1 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
-          title="Fermer"
-        >
+        <button onClick={onClose} className="p-1 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors flex-shrink-0" title="Fermer">
           <X className="w-4 h-4" />
         </button>
       </div>
@@ -101,30 +95,72 @@ const RouteDetailPanel: React.FC<Props> = ({ routeId, analysis, onClose }) => {
           <MetricRow label="Poids connexion" value={myConnections} description={`Sur un max de ${maxConnections}`} />
           <div className="mt-1">
             <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-              <div
-                className="h-full bg-primary/70 rounded-full"
-                style={{ width: `${(myConnections / maxConnections) * 100}%` }}
-              />
+              <div className="h-full bg-primary/70 rounded-full" style={{ width: `${(myConnections / maxConnections) * 100}%` }} />
             </div>
           </div>
         </Section>
 
-        {/* Connected routes */}
-        <Section title={`Correspondances (${connectedRoutes.length})`}>
+        {/* Station list (collapsible) */}
+        <Section title={
+          <button onClick={() => setShowStations(!showStations)} className="flex items-center gap-1 w-full text-left">
+            {showStations ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+            Stations ({stationList.length})
+          </button>
+        }>
+          {showStations && (
+            <>
+              <div className="flex justify-end mb-1">
+                <button
+                  onClick={() => exportRouteStationsCsv(route, analysis)}
+                  className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Download className="w-3 h-3" /> CSV
+                </button>
+              </div>
+              <div className="space-y-0.5 max-h-56 overflow-y-auto">
+                {stationList.map(s => (
+                  <div key={s.stopId} className="flex items-center gap-2 py-0.5 text-xs">
+                    <span className="text-foreground truncate flex-1">{s.name}</span>
+                    <span className="text-muted-foreground font-mono flex-shrink-0 text-[10px]">
+                      {s.routeCount > 1 ? `${s.routeCount} lg` : ''}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </Section>
+
+        {/* Connected routes with station names */}
+        <Section title={
+          <div className="flex items-center justify-between w-full">
+            <span>Correspondances ({connectedRoutes.length})</span>
+            {connectedRoutes.length > 0 && (
+              <button
+                onClick={() => exportRouteCorrespondencesCsv(routeId, analysis)}
+                className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors font-normal normal-case tracking-normal"
+              >
+                <Download className="w-3 h-3" /> CSV
+              </button>
+            )}
+          </div>
+        }>
           {connectedRoutes.length === 0 ? (
             <p className="text-xs text-muted-foreground italic">Aucune correspondance détectée</p>
           ) : (
-            <div className="space-y-1 max-h-48 overflow-y-auto">
+            <div className="space-y-2 max-h-56 overflow-y-auto">
               {connectedRoutes.map(cr => (
-                <div key={cr.route!.routeId} className="flex items-center gap-2 py-1 text-xs">
-                  <span
-                    className="w-2 h-2 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: cr.route!.color || modeColors[cr.route!.mode] }}
-                  />
-                  <span className="text-foreground truncate flex-1">{cr.route!.name}</span>
-                  <span className="text-muted-foreground font-mono flex-shrink-0">
-                    {cr.sharedStops} st.
-                  </span>
+                <div key={cr.route!.routeId} className="py-1">
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: cr.route!.color || modeColors[cr.route!.mode] }} />
+                    <span className="text-foreground truncate flex-1">{cr.route!.name}</span>
+                    <span className="text-muted-foreground font-mono flex-shrink-0">{cr.sharedStops} st.</span>
+                  </div>
+                  {cr.stationNames.length > 0 && (
+                    <p className="text-[10px] text-muted-foreground ml-4 mt-0.5 truncate">
+                      via {cr.stationNames.slice(0, 3).join(', ')}{cr.stationNames.length > 3 ? '…' : ''}
+                    </p>
+                  )}
                 </div>
               ))}
             </div>
@@ -152,9 +188,11 @@ const RouteDetailPanel: React.FC<Props> = ({ routeId, analysis, onClose }) => {
   );
 };
 
-const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
+const Section: React.FC<{ title: string | React.ReactNode; children: React.ReactNode }> = ({ title, children }) => (
   <div>
-    <h4 className="text-xs font-semibold text-foreground uppercase tracking-wider mb-2">{title}</h4>
+    <h4 className="text-xs font-semibold text-foreground uppercase tracking-wider mb-2">
+      {title}
+    </h4>
     {children}
   </div>
 );
