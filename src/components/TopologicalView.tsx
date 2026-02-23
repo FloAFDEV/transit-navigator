@@ -187,9 +187,14 @@ const TopologicalView: React.FC<Props> = ({ analysis, selectedRouteId, onSelectR
     <div className="flex flex-col items-center gap-4">
       <HowToRead
         title="Vue topologique du réseau"
-        what="Chaque cercle représente une station de correspondance. La taille indique le nombre de lignes qui s'y croisent. La couleur varie du jaune (friction faible) au rouge (friction élevée). Les traits entre stations montrent qu'elles partagent au moins une ligne."
-        deduce="Les gros nœuds rouges sont des goulots d'étranglement potentiels. Les clusters denses révèlent des zones de forte interconnexion. Les stations isolées indiquent des zones mal maillées."
-        caution="Seules les stations desservies par 2+ lignes sont affichées. La position ne reflète pas la géographie réelle."
+        what="Chaque cercle représente une station desservie par 2+ lignes. La taille indique le nombre de lignes qui s'y croisent. La couleur varie du jaune (friction faible) au rouge (friction élevée). Les traits entre stations montrent qu'elles partagent au moins une ligne commune."
+        deduce="Les gros nœuds rouges sont des goulots d'étranglement potentiels. Les clusters denses révèlent des pôles d'échange majeurs. Les stations isolées en périphérie indiquent des zones mal maillées nécessitant de nouvelles connexions."
+        caution="Seules les stations multi-lignes sont affichées (max 120). La position est calculée algorithmiquement et ne reflète pas la géographie réelle. La friction seule ne suffit pas à conclure — croisez avec les données de fréquentation."
+        examples={[
+          "Un gros nœud rouge central (ex: gare principale) connecté à 8+ lignes confirme un hub majeur — mais aussi un point de vulnérabilité si la station tombe en panne.",
+          "Un chapelet de petits nœuds jaunes reliés en ligne droite révèle un corridor de transport linéaire (ex: ligne de tram) sans alternatives parallèles.",
+          "Deux clusters denses non reliés entre eux signalent deux sous-réseaux indépendants — une opportunité pour une nouvelle ligne de liaison.",
+        ]}
       />
 
       <div className="flex gap-4 items-start">

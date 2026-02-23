@@ -288,9 +288,14 @@ const TransitDiagram: React.FC<Props> = ({ analysis, selectedRouteId, onSelectRo
     <div className="flex flex-col items-center gap-4">
       <HowToRead
         title="Diagramme de correspondances"
-        what="Chaque cercle (nœud) représente une ligne de transport. Les traits entre eux montrent les correspondances : deux lignes sont reliées si elles partagent au moins une station (dans un rayon de 50m). L'épaisseur du trait indique le nombre de stations partagées."
-        deduce="Les nœuds très connectés sont des lignes structurantes du réseau. Les clusters de nœuds reliés révèlent des sous-réseaux cohérents. Une ligne isolée peut signaler un défaut de maillage. Cliquez sur un nœud pour explorer ses détails."
-        caution="La position des nœuds est calculée par un algorithme de force et ne représente pas la géographie. Seules les 200 correspondances les plus fortes sont affichées."
+        what="Chaque cercle représente une ligne de transport, colorée par mode. Les traits entre eux montrent les correspondances : deux lignes sont reliées si elles partagent au moins une station (rayon de 200m). L'épaisseur du trait est proportionnelle au nombre de stations partagées."
+        deduce="Les nœuds très connectés (beaucoup de liens) sont les lignes structurantes. Les clusters révèlent des sous-réseaux cohérents. Une ligne isolée (sans lien) signale un défaut de maillage. Cliquez sur un nœud pour voir ses correspondances."
+        caution="La position des nœuds est calculée par un algorithme de force et ne reflète pas la géographie. Seules les correspondances les plus fortes sont affichées pour la lisibilité."
+        examples={[
+          "Une ligne de métro au centre avec 10+ liens épais est un « backbone » du réseau : sa suppression déconnecterait de nombreuses lignes de bus.",
+          "Deux clusters séparés (ex: bus nord et bus sud) reliés par un seul lien fin indiquent une fragilité : un seul point de correspondance entre deux sous-réseaux.",
+          "Si une ligne de tram n'a aucun lien vers les bus environnants, c'est potentiellement un pôle d'échange manquant à créer.",
+        ]}
       />
 
       <div className="flex gap-4 items-start">

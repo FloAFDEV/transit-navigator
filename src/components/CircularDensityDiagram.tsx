@@ -175,9 +175,14 @@ const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode, selecte
     <div className="flex flex-col items-center gap-4">
       <HowToRead
         title="Diagramme circulaire de densité"
-        what="Chaque trait droit traversant le cercle représente une ligne de transport. Plus le cercle est rempli de traits, plus le réseau est dense pour le mode sélectionné."
-        deduce="Un cercle très rempli indique un réseau dense avec de nombreuses lignes. Comparer les modes permet de voir lequel domine. Cliquez sur un trait pour explorer la ligne en détail."
-        caution="Ce diagramme ne représente pas la géographie réelle. La position des traits n'indique pas le tracé des lignes."
+        what="Chaque trait droit traversant le cercle représente une ligne de transport. La couleur indique le mode (bus, métro, tram, train, câble). Plus le cercle est rempli, plus le réseau est dense pour le mode sélectionné."
+        deduce="Un cercle très rempli indique un réseau dense. Comparer les modes via les filtres permet de voir lequel domine l'offre. Cliquez sur un trait pour explorer la ligne en détail dans le panneau latéral."
+        caution="Ce diagramme ne représente pas la géographie réelle. La position angulaire des traits est arbitraire et n'indique pas le tracé des lignes. La densité visuelle peut être trompeuse si un mode a beaucoup de lignes courtes."
+        examples={[
+          "Si le filtre 'Bus' remplit tout le cercle mais 'Métro' n'a que 2 traits, le réseau repose massivement sur le bus — un déséquilibre modal à questionner.",
+          "Un trait épais et lumineux entouré de traits fins peut indiquer une ligne structurante (ex: ligne de métro) au milieu de lignes secondaires.",
+          "En filtrant mode par mode, vous pouvez comparer la couverture : un réseau avec 80 lignes de bus et 2 de tram révèle une dépendance au mode routier.",
+        ]}
       />
 
       <div className="flex gap-4 items-start">
