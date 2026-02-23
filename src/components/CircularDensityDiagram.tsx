@@ -20,6 +20,17 @@ const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode, selecte
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const size = 560;
+
+  // Connected route IDs for the selected route
+  const connectedRouteIds = useMemo(() => {
+    if (!selectedRouteId) return new Set<string>();
+    const ids = new Set<string>();
+    for (const c of analysis.correspondences) {
+      if (c.routeA === selectedRouteId) ids.add(c.routeB);
+      if (c.routeB === selectedRouteId) ids.add(c.routeA);
+    }
+    return ids;
+  }, [selectedRouteId, analysis.correspondences]);
   const cx = size / 2;
   const cy = size / 2;
   const radius = 220;
@@ -141,14 +152,16 @@ const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode, selecte
       if (selectedRouteId) {
         if (routeId === selectedRouteId) {
           line.attr('stroke-opacity', 1).attr('stroke-width', strokeW * 3);
+        } else if (connectedRouteIds.has(routeId)) {
+          line.attr('stroke-opacity', 0.7).attr('stroke-width', strokeW * 2);
         } else {
-          line.attr('stroke-opacity', 0.08).attr('stroke-width', strokeW);
+          line.attr('stroke-opacity', 0.06).attr('stroke-width', strokeW * 0.5);
         }
       } else {
         line.attr('stroke-opacity', baseOpacity).attr('stroke-width', strokeW);
       }
     });
-  }, [selectedRouteId]);
+  }, [selectedRouteId, connectedRouteIds]);
 
   const resetZoom = useCallback(() => {
     if (svgRef.current && zoomRef.current) {
