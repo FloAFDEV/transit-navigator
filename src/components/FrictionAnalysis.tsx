@@ -76,9 +76,14 @@ const FrictionAnalysis: React.FC<Props> = ({ analysis, selectedRouteId, onSelect
     <div className="space-y-8 max-w-4xl mx-auto">
       <HowToRead
         title="Analyse de friction du réseau"
-        what="Cette vue présente des indicateurs quantitatifs sur la structure du réseau : friction aux stations, surcharge des lignes, et zones sous-desservies. Les couleurs (vert/orange/rouge) indiquent le niveau d'intensité."
-        deduce="Les stations à forte friction sont des nœuds critiques où de nombreuses correspondances se croisent. Les lignes surchargées portent une grande part des connexions du réseau. Cliquez sur une ligne pour voir ses détails."
-        caution="Un indice de friction élevé n'est pas nécessairement négatif : il peut refléter un hub bien conçu. Ces indicateurs doivent être croisés avec des données de fréquentation réelle."
+        what="Cette vue présente trois tableaux : les stations à plus forte friction (ratio correspondances/lignes), les lignes les plus chargées en connexions, et les indicateurs globaux du réseau (redondance, lisibilité, complexité). Les barres colorées vert/orange/rouge indiquent l'intensité."
+        deduce="Les stations à forte friction sont des nœuds critiques nécessitant une attention prioritaire. Les lignes surchargées sont les « colonnes vertébrales » du réseau. Utilisez le bouton 'Pourquoi ?' pour obtenir un diagnostic automatique par station."
+        caution="Un indice de friction élevé n'est pas nécessairement négatif : il peut refléter un hub bien conçu (ex: gare multimodale). Ces indicateurs doivent être croisés avec des données de fréquentation réelle pour distinguer une complexité utile d'un engorgement problématique."
+        examples={[
+          "Une station avec friction > 3.0 et 6+ lignes (ex: gare centrale) est un hub critique : si elle est bien dimensionnée, c'est un atout ; sinon, c'est un risque de congestion.",
+          "Une ligne en tête du classement avec 50+ connexions mais une redondance réseau < 20% signale une dépendance excessive : sa suppression isolerait des pans entiers du réseau.",
+          "Le score de lisibilité < 40% combiné à 100+ lignes indique que les usagers ont besoin d'outils d'aide à la navigation (app, signalétique renforcée).",
+        ]}
       />
 
       {/* Network-level metrics */}
