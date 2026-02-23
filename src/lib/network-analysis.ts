@@ -59,7 +59,7 @@ function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number)
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-const PROXIMITY_RADIUS_M = 50;
+const PROXIMITY_RADIUS_M = 200;
 
 /**
  * Build clusters of stops that are within PROXIMITY_RADIUS_M of each other.
