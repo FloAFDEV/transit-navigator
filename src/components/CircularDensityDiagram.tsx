@@ -149,16 +149,18 @@ const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode, selecte
       const routeId = line.attr('data-route');
       if (!routeId) return;
 
+      const t = d3.transition().duration(400).ease(d3.easeCubicOut);
+
       if (selectedRouteId) {
         if (routeId === selectedRouteId) {
-          line.attr('stroke-opacity', 1).attr('stroke-width', strokeW * 3);
+          line.transition(t as any).attr('stroke-opacity', 1).attr('stroke-width', strokeW * 3);
         } else if (connectedRouteIds.has(routeId)) {
-          line.attr('stroke-opacity', 0.7).attr('stroke-width', strokeW * 2);
+          line.transition(t as any).attr('stroke-opacity', 0.7).attr('stroke-width', strokeW * 2);
         } else {
-          line.attr('stroke-opacity', 0.06).attr('stroke-width', strokeW * 0.5);
+          line.transition(t as any).attr('stroke-opacity', 0.06).attr('stroke-width', strokeW * 0.5);
         }
       } else {
-        line.attr('stroke-opacity', baseOpacity).attr('stroke-width', strokeW);
+        line.transition(t as any).attr('stroke-opacity', baseOpacity).attr('stroke-width', strokeW);
       }
     });
   }, [selectedRouteId, connectedRouteIds]);
