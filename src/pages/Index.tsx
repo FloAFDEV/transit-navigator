@@ -16,6 +16,8 @@ import { modeLabels } from '@/lib/gtfs-types';
 import { exportPngFromSvg } from '@/lib/csv-export';
 import { toast } from 'sonner';
 import { Share2, Image } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { modeColors } from '@/lib/gtfs-types';
 
 type ViewTab = 'density' | 'transit' | 'topology' | 'friction';
 
@@ -118,6 +120,28 @@ const Index: React.FC = () => {
         <div className="flex items-center gap-4">
           <h1 className="text-sm font-semibold text-foreground tracking-tight">GTFS Analyzer</h1>
           <span className="text-xs text-muted-foreground font-mono">{fileName}</span>
+          <Select
+            value={selectedRouteId ?? '__none__'}
+            onValueChange={(val) => handleSelectRoute(val === '__none__' ? null : val)}
+          >
+            <SelectTrigger className="w-[220px] h-8 text-xs">
+              <SelectValue placeholder="Sélectionner une ligne…" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">Toutes les lignes</SelectItem>
+              {analysis.routes.map((r) => (
+                <SelectItem key={r.routeId} value={r.routeId}>
+                  <span className="flex items-center gap-2">
+                    <span
+                      className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
+                      style={{ backgroundColor: modeColors[r.mode] }}
+                    />
+                    {r.name} ({modeLabels[r.mode]})
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div className="flex items-center gap-2">
           <GlossaryPanel />
