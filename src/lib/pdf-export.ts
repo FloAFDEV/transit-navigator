@@ -5,6 +5,7 @@ import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import type { AnalysisResult } from './network-analysis';
 import { modeLabels } from './gtfs-types';
+import { generateSignageRecommendations } from '@/components/SignageGuide';
 
 interface ExportOptions {
   analysis: AnalysisResult;
@@ -155,6 +156,45 @@ export async function exportPdfReport({
   for (const r of topRoutes) {
     ensureSpace(6);
     addText(`${r.name} — ${r.connections} connexions, ${r.stopCount} arrêts`, 8);
+  }
+
+  // --- Signage Recommendations page ---
+  pdf.addPage();
+  y = margin;
+  addText('Recommandations signalétiques — Top 10 stations', 14, { bold: true });
+  y += 2;
+  addText('Actions terrain basées sur l\'analyse de friction et de centralité', 9, { color: [120, 120, 120] });
+  y += 6;
+
+  const recommendations = generateSignageRecommendations(analysis);
+  for (const rec of recommendations) {
+    ensureSpace(30);
+    const levelLabel = rec.level === 'critical' ? '🔴 CRITIQUE' : rec.level === 'warning' ? '🟡 ATTENTION' : '🟢 STANDARD';
+    addText(`${levelLabel} — ${rec.station}`, 10, { bold: true });
+    addText(`  Friction: ${rec.friction.toFixed(2)} · ${rec.routeCount} lignes · ${rec.correspondences} correspondances`, 8, { color: [100, 100, 100] });
+    y += 1;
+    for (const action of rec.actions) {
+      ensureSpace(5);
+      addText(`    → ${action}`, 8);
+    }
+    y += 3;
+  }
+
+  // Translation table
+  ensureSpace(50);
+  y += 4;
+  addText('Grille de lecture terrain', 12, { bold: true });
+  y += 2;
+  const gridLines = [
+    'Station friction > 3.0 → Renforcer signalétique directionnelle (panneaux, jalonnement, écrans)',
+    'Station avec beaucoup de correspondances → Ajouter plans de quartier, totems, personnel',
+    'Ligne structurante (beaucoup de correspondances) → Prévoir itinéraires de substitution fléchés',
+    'Station périphérique isolée → Info voyageur vers le hub le plus proche',
+    'Redondance réseau < 20% → Communiquer les itinéraires bis en cas de perturbation',
+  ];
+  for (const line of gridLines) {
+    ensureSpace(8);
+    addText(`  • ${line}`, 8);
   }
 
   onProgress?.('Finalisation...');

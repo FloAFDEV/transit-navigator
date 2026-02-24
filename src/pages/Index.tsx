@@ -5,6 +5,7 @@ import TransitDiagram from '@/components/TransitDiagram';
 import FrictionAnalysis from '@/components/FrictionAnalysis';
 import TopologicalView from '@/components/TopologicalView';
 import NetworkNarrative from '@/components/NetworkNarrative';
+import SignageGuide from '@/components/SignageGuide';
 import RouteDetailPanel from '@/components/RouteDetailPanel';
 import GlossaryPanel from '@/components/GlossaryPanel';
 import PdfExportButton from '@/components/PdfExportButton';
@@ -220,6 +221,11 @@ const Index: React.FC = () => {
               selectedRouteId={selectedRouteId}
               onSelectRoute={handleSelectRoute}
             />
+          </div>
+
+          {/* Signage guide */}
+          <div className="mt-8">
+            <SignageGuide analysis={analysis} />
           </div>
 
           {/* Network narrative */}
