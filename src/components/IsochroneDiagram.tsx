@@ -3,6 +3,7 @@ import * as d3 from 'd3';
 import type { ParsedGtfs } from '@/lib/gtfs-types';
 import type { TravelEdge, IsochroneNode } from '@/lib/isochrone';
 import { buildTravelGraph, computeIsochrone, getCenterCandidates } from '@/lib/isochrone';
+import { routeTypeToMode, modeColors } from '@/lib/gtfs-types';
 import { exportSvg } from '@/lib/svg-export';
 import { Download, RotateCcw, ZoomIn, ZoomOut, Clock, MapPin } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -29,7 +30,29 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
   const cx = size / 2;
   const cy = size / 2;
 
-  const graph = useMemo(() => buildTravelGraph(gtfs), [gtfs]);
+  // Filter: only Métro, Téléo/Câble, and Linéo routes
+  const filteredRouteIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const route of gtfs.routes) {
+      const mode = routeTypeToMode(Number(route.route_type));
+      const name = (route.route_short_name || route.route_long_name || '').toLowerCase();
+      const isLineo = name.includes('lineo') || name.includes('linéo') || /^l\d+$/i.test(name.trim());
+      if (mode === 'metro' || mode === 'cable' || isLineo) {
+        ids.add(route.route_id);
+      }
+    }
+    return ids;
+  }, [gtfs.routes]);
+
+  const allowedTripIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const trip of gtfs.trips) {
+      if (filteredRouteIds.has(trip.route_id)) ids.add(trip.trip_id);
+    }
+    return ids;
+  }, [gtfs.trips, filteredRouteIds]);
+
+  const graph = useMemo(() => buildTravelGraph(gtfs, allowedTripIds), [gtfs, allowedTripIds]);
   const candidates = useMemo(() => getCenterCandidates(gtfs, graph, 30), [gtfs, graph]);
   const [centerId, setCenterId] = useState<string | null>(null);
   const [maxMin, setMaxMin] = useState(30);
@@ -59,6 +82,41 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
     for (let m = 5; m <= maxMin; m += 5) b.push(m);
     return b;
   }, [maxMin]);
+
+  // Map stop → route color (for coloring dots by line)
+  const stopRouteColor = useMemo(() => {
+    const tripRoute = new Map<string, string>();
+    for (const t of gtfs.trips) {
+      if (filteredRouteIds.has(t.route_id)) tripRoute.set(t.trip_id, t.route_id);
+    }
+    const routeColorMap = new Map<string, { color: string; priority: number }>();
+    for (const r of gtfs.routes) {
+      if (!filteredRouteIds.has(r.route_id)) continue;
+      const mode = routeTypeToMode(Number(r.route_type));
+      const color = r.route_color ? `#${r.route_color}` : modeColors[mode];
+      // priority: metro > cable > lineo
+      const priority = mode === 'metro' ? 3 : mode === 'cable' ? 2 : 1;
+      routeColorMap.set(r.route_id, { color, priority });
+    }
+    const stopColor = new Map<string, string>();
+    for (const st of gtfs.stopTimes) {
+      const routeId = tripRoute.get(st.trip_id);
+      if (!routeId) continue;
+      const rc = routeColorMap.get(routeId);
+      if (!rc) continue;
+      const existing = stopColor.get(st.stop_id);
+      if (!existing) {
+        stopColor.set(st.stop_id, rc.color);
+      } else {
+        // Keep higher priority color
+        const existingRoute = [...routeColorMap.values()].find(v => v.color === existing);
+        if (existingRoute && rc.priority > existingRoute.priority) {
+          stopColor.set(st.stop_id, rc.color);
+        }
+      }
+    }
+    return stopColor;
+  }, [gtfs, filteredRouteIds]);
 
   useEffect(() => {
     if (!svgRef.current || !centerStop || nodes.length === 0) return;
@@ -111,11 +169,10 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
 
     nodes.forEach((node) => {
       const r = rScale(node.travelTime);
-      const angle = bearingTo(node.lat, node.lon) - Math.PI / 2; // rotate so north is up
+      const angle = bearingTo(node.lat, node.lon) - Math.PI / 2;
       const x = cx + Math.cos(angle) * r;
       const y = cy + Math.sin(angle) * r;
-      const bandIdx = Math.min(Math.floor(node.band / 5) - 1, BAND_COLORS.length - 1);
-      const color = BAND_COLORS[Math.max(0, bandIdx)];
+      const color = stopRouteColor.get(node.stopId) ?? BAND_COLORS[Math.max(0, Math.min(Math.floor(node.band / 5) - 1, BAND_COLORS.length - 1))];
 
       content.append('circle')
         .attr('cx', x).attr('cy', y).attr('r', dotRadius)
@@ -187,7 +244,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
     zoomRef.current = zoom;
 
     return () => { svg.on('.zoom', null); };
-  }, [nodes, centerStop, bands, maxMin, cx, cy, size]);
+  }, [nodes, centerStop, bands, maxMin, cx, cy, size, stopRouteColor]);
 
   const resetZoom = useCallback(() => {
     if (svgRef.current && zoomRef.current) d3.select(svgRef.current).transition().duration(400).call(zoomRef.current.transform, d3.zoomIdentity);
@@ -207,6 +264,23 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
     }
     return Array.from(stats.entries()).sort((a, b) => a[0] - b[0]);
   }, [nodes]);
+
+  // Filtered route names for legend
+  const filteredRouteLegend = useMemo(() => {
+    return gtfs.routes
+      .filter(r => filteredRouteIds.has(r.route_id))
+      .map(r => {
+        const mode = routeTypeToMode(Number(r.route_type));
+        const name = r.route_short_name || r.route_long_name || r.route_id;
+        const color = r.route_color ? `#${r.route_color}` : modeColors[mode];
+        const isLineo = (r.route_short_name || r.route_long_name || '').toLowerCase().includes('lineo') ||
+          (r.route_short_name || r.route_long_name || '').toLowerCase().includes('linéo') ||
+          /^l\d+$/i.test((r.route_short_name || '').trim());
+        const type = mode === 'metro' ? 'Métro' : mode === 'cable' ? 'Téléo / Câble' : isLineo ? 'Linéo' : 'Autre';
+        return { name, color, type };
+      })
+      .sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
+  }, [gtfs.routes, filteredRouteIds]);
 
   return (
     <div className="flex flex-col items-center gap-4">
@@ -296,11 +370,25 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
         {/* Legend + stats */}
         <div className="flex flex-col gap-3 min-w-[180px]">
           <div className="bg-card border border-border rounded-lg p-3">
+            <h4 className="text-xs font-semibold text-foreground mb-2">Lignes affichées</h4>
+            <div className="flex flex-col gap-1.5 max-h-[200px] overflow-y-auto">
+              {filteredRouteLegend.map((r, i) => (
+                <div key={i} className="flex items-center gap-2 text-xs">
+                  <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: r.color }} />
+                  <span className="text-foreground font-medium">{r.name}</span>
+                  <span className="text-muted-foreground text-[10px]">{r.type}</span>
+                </div>
+              ))}
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-2">Métro · Téléo · Linéo uniquement</p>
+          </div>
+
+          <div className="bg-card border border-border rounded-lg p-3">
             <h4 className="text-xs font-semibold text-foreground mb-2">Bandes isochrones</h4>
             <div className="flex flex-col gap-1.5">
               {bands.map((m, i) => (
                 <div key={m} className="flex items-center gap-2 text-xs">
-                  <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: BAND_COLORS[i % BAND_COLORS.length] }} />
+                  <span className="w-3 h-3 rounded-full flex-shrink-0 border border-border" style={{ backgroundColor: BAND_COLORS[i % BAND_COLORS.length], opacity: 0.4 }} />
                   <span className="text-muted-foreground">{m - 4}–{m} min</span>
                   <span className="ml-auto font-mono text-foreground">{bandStats.find(([b]) => b === m)?.[1] ?? 0}</span>
                 </div>
@@ -315,9 +403,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
               <div>Temps médian : <span className="font-mono text-foreground">
                 {nodes.length > 0 ? `${Math.round(nodes[Math.floor(nodes.length / 2)].travelTime / 60)} min` : '—'}
               </span></div>
-              <div>Couverture : <span className="font-mono text-foreground">
-                {graph.size > 0 ? `${Math.round((nodes.length / graph.size) * 100)}%` : '—'}
-              </span></div>
+              <div>Lignes filtrées : <span className="font-mono text-foreground">{filteredRouteLegend.length}</span></div>
             </div>
           </div>
         </div>
