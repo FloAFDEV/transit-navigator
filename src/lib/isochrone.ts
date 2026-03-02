@@ -31,11 +31,12 @@ export interface IsochroneNode {
  * Build a weighted graph of average travel times between consecutive stops.
  * Groups by (from, to) and averages.
  */
-export function buildTravelGraph(gtfs: ParsedGtfs): Map<string, TravelEdge[]> {
+export function buildTravelGraph(gtfs: ParsedGtfs, allowedTripIds?: Set<string>): Map<string, TravelEdge[]> {
   // Group stop_times by trip, sorted by sequence
   const tripStops = new Map<string, { stop_id: string; arrival: number | null; departure: number | null; seq: number }[]>();
 
   for (const st of gtfs.stopTimes) {
+    if (allowedTripIds && !allowedTripIds.has(st.trip_id)) continue;
     if (!tripStops.has(st.trip_id)) tripStops.set(st.trip_id, []);
     tripStops.get(st.trip_id)!.push({
       stop_id: st.stop_id,
