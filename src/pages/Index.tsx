@@ -4,6 +4,7 @@ import CircularDensityDiagram from '@/components/CircularDensityDiagram';
 import TransitDiagram from '@/components/TransitDiagram';
 import FrictionAnalysis from '@/components/FrictionAnalysis';
 import TopologicalView from '@/components/TopologicalView';
+import IsochroneDiagram from '@/components/IsochroneDiagram';
 import NetworkNarrative from '@/components/NetworkNarrative';
 import SignageGuide from '@/components/SignageGuide';
 import RouteDetailPanel from '@/components/RouteDetailPanel';
@@ -11,7 +12,7 @@ import GlossaryPanel from '@/components/GlossaryPanel';
 import PdfExportButton from '@/components/PdfExportButton';
 import { parseGtfsZip } from '@/lib/gtfs-parser';
 import { analyzeNetwork, type AnalysisResult } from '@/lib/network-analysis';
-import type { TransportMode } from '@/lib/gtfs-types';
+import type { TransportMode, ParsedGtfs } from '@/lib/gtfs-types';
 import { modeLabels } from '@/lib/gtfs-types';
 import { exportPngFromSvg } from '@/lib/csv-export';
 import { toast } from 'sonner';
@@ -19,10 +20,11 @@ import { Share2, Image } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { modeColors } from '@/lib/gtfs-types';
 
-type ViewTab = 'density' | 'transit' | 'topology' | 'friction';
+type ViewTab = 'density' | 'transit' | 'topology' | 'friction' | 'isochrone';
 
 const Index: React.FC = () => {
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [gtfsData, setGtfsData] = useState<ParsedGtfs | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<ViewTab>('density');
   const [filterMode, setFilterMode] = useState<TransportMode | 'all'>('all');
@@ -32,6 +34,7 @@ const Index: React.FC = () => {
   const transitRef = useRef<HTMLDivElement>(null);
   const frictionRef = useRef<HTMLDivElement>(null);
   const topologyRef = useRef<HTMLDivElement>(null);
+  const isochroneRef = useRef<HTMLDivElement>(null);
 
   // Restore state from URL on mount
   useEffect(() => {
@@ -39,7 +42,7 @@ const Index: React.FC = () => {
     const tab = params.get('tab') as ViewTab | null;
     const mode = params.get('mode') as TransportMode | 'all' | null;
     const route = params.get('route');
-    if (tab && ['density', 'transit', 'topology', 'friction'].includes(tab)) setActiveTab(tab);
+    if (tab && ['density', 'transit', 'topology', 'friction', 'isochrone'].includes(tab)) setActiveTab(tab);
     if (mode) setFilterMode(mode);
     if (route) setSelectedRouteId(route);
   }, []);
@@ -60,6 +63,8 @@ const Index: React.FC = () => {
     try {
       const gtfs = await parseGtfsZip(file);
       const result = analyzeNetwork(gtfs);
+      setGtfsData(gtfs);
+      setAnalysis(result);
       setAnalysis(result);
       setFileName(file.name);
       setSelectedRouteId(null);
@@ -86,6 +91,7 @@ const Index: React.FC = () => {
       transit: transitRef,
       topology: topologyRef,
       friction: frictionRef,
+      isochrone: isochroneRef,
     };
     const container = refMap[activeTab]?.current;
     if (!container) return;
@@ -109,6 +115,7 @@ const Index: React.FC = () => {
     { key: 'transit', label: 'Correspondances' },
     { key: 'topology', label: 'Topologie' },
     { key: 'friction', label: 'Analyse friction' },
+    { key: 'isochrone', label: 'Isochrones' },
   ];
 
   const modes: (TransportMode | 'all')[] = ['all', 'bus', 'metro', 'tram', 'train', 'cable'];
@@ -169,7 +176,7 @@ const Index: React.FC = () => {
             Partager
           </button>
           <button
-            onClick={() => { setAnalysis(null); setFileName(''); setSelectedRouteId(null); window.history.replaceState({}, '', window.location.pathname); }}
+            onClick={() => { setAnalysis(null); setGtfsData(null); setFileName(''); setSelectedRouteId(null); window.history.replaceState({}, '', window.location.pathname); }}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
             Nouveau fichier
@@ -245,6 +252,9 @@ const Index: React.FC = () => {
               selectedRouteId={selectedRouteId}
               onSelectRoute={handleSelectRoute}
             />
+          </div>
+          <div ref={isochroneRef} style={{ display: activeTab === 'isochrone' ? 'block' : 'none' }}>
+            {gtfsData && <IsochroneDiagram gtfs={gtfsData} />}
           </div>
 
           {/* Signage guide */}
