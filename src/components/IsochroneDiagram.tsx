@@ -37,7 +37,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
       const mode = routeTypeToMode(Number(route.route_type));
       const name = (route.route_short_name || route.route_long_name || '').toLowerCase();
       const isLineo = name.includes('lineo') || name.includes('linéo') || /^l\d+$/i.test(name.trim());
-      if (mode === 'metro' || mode === 'cable' || isLineo) {
+      if (mode === 'metro' || mode === 'tram' || mode === 'cable' || isLineo) {
         ids.add(route.route_id);
       }
     }
@@ -61,7 +61,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
   useEffect(() => {
     if (!centerId && candidates.length > 0) {
       // Try to find Toulouse hubs by name
-      const preferred = ['capitole', 'jean-jaurès', 'jean jaurès', 'jeanne d\'arc', 'jeanne-d\'arc', 'marengo'];
+      const preferred = ['jean-jaurès', 'jean jaurès', 'jean jaures', 'jaurès', 'jaures'];
       const found = candidates.find(c => preferred.some(p => c.stopName.toLowerCase().includes(p)));
       setCenterId(found?.stopId ?? candidates[0].stopId);
     }
@@ -276,7 +276,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
         const isLineo = (r.route_short_name || r.route_long_name || '').toLowerCase().includes('lineo') ||
           (r.route_short_name || r.route_long_name || '').toLowerCase().includes('linéo') ||
           /^l\d+$/i.test((r.route_short_name || '').trim());
-        const type = mode === 'metro' ? 'Métro' : mode === 'cable' ? 'Téléo / Câble' : isLineo ? 'Linéo' : 'Autre';
+        const type = mode === 'metro' ? 'Métro' : mode === 'tram' ? 'Tram' : mode === 'cable' ? 'Téléo / Câble' : isLineo ? 'Linéo' : 'Autre';
         return { name, color, type };
       })
       .sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
@@ -380,7 +380,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
                 </div>
               ))}
             </div>
-            <p className="text-[10px] text-muted-foreground mt-2">Métro · Téléo · Linéo uniquement</p>
+            <p className="text-[10px] text-muted-foreground mt-2">Métro · Tram · Téléo · Linéo uniquement</p>
           </div>
 
           <div className="bg-card border border-border rounded-lg p-3">
