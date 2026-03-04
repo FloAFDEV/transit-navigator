@@ -19,6 +19,7 @@ const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode, selecte
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
+  const selectedRouteIdRef = useRef<string | null>(selectedRouteId);
   const size = 560;
 
   // Connected route IDs for the selected route
@@ -64,6 +65,10 @@ const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode, selecte
   }, [filteredRoutes, cx, cy, radius]);
 
   useEffect(() => {
+    selectedRouteIdRef.current = selectedRouteId;
+  }, [selectedRouteId]);
+
+  useEffect(() => {
     if (!svgRef.current) return;
     const svg = d3.select(svgRef.current);
     svg.selectAll('g.content').remove();
@@ -93,7 +98,7 @@ const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode, selecte
         .attr('data-route', route.routeId)
         .attr('cursor', 'pointer')
         .on('mouseenter', function (event) {
-          if (!selectedRouteId) {
+          if (!selectedRouteIdRef.current) {
             d3.select(this).attr('stroke-opacity', 1).attr('stroke-width', strokeW * 2.5);
           }
           if (tooltipRef.current) {
@@ -104,18 +109,19 @@ const CircularDensityDiagram: React.FC<Props> = ({ analysis, filterMode, selecte
               <span class="font-semibold">${route.name}</span>
               <span class="text-muted-foreground"> · ${modeLabels[route.mode]}</span>
               <br/><span class="text-muted-foreground">${route.stopCount} arrêts · ${route.tripCount} trajets</span>
-              <br/><span class="text-muted-foreground text-[10px]">Cliquer pour ${selectedRouteId === route.routeId ? 'désélectionner' : 'sélectionner'}</span>
+              <br/><span class="text-muted-foreground text-[10px]">Cliquer pour ${selectedRouteIdRef.current === route.routeId ? 'désélectionner' : 'sélectionner'}</span>
             `;
           }
         })
         .on('mouseleave', function () {
-          if (!selectedRouteId) {
+          if (!selectedRouteIdRef.current) {
             d3.select(this).attr('stroke-opacity', baseOpacity).attr('stroke-width', strokeW);
           }
           if (tooltipRef.current) tooltipRef.current.style.opacity = '0';
         })
         .on('click', function () {
-          onSelectRoute(selectedRouteId === route.routeId ? null : route.routeId);
+          const currentSelectedRouteId = selectedRouteIdRef.current;
+          onSelectRoute(currentSelectedRouteId === route.routeId ? null : route.routeId);
         });
     });
 
