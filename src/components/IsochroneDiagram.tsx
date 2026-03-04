@@ -83,20 +83,24 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
     return b;
   }, [maxMin]);
 
+  // Build route color map and per-route ordered stop sequences
+  const routeColorMap = useMemo(() => {
+    const map = new Map<string, { color: string; priority: number }>();
+    for (const r of gtfs.routes) {
+      if (!filteredRouteIds.has(r.route_id)) continue;
+      const mode = routeTypeToMode(Number(r.route_type));
+      const color = r.route_color ? `#${r.route_color}` : modeColors[mode];
+      const priority = mode === 'metro' ? 3 : mode === 'cable' ? 2 : mode === 'tram' ? 2 : 1;
+      map.set(r.route_id, { color, priority });
+    }
+    return map;
+  }, [gtfs.routes, filteredRouteIds]);
+
   // Map stop → route color (for coloring dots by line)
   const stopRouteColor = useMemo(() => {
     const tripRoute = new Map<string, string>();
     for (const t of gtfs.trips) {
       if (filteredRouteIds.has(t.route_id)) tripRoute.set(t.trip_id, t.route_id);
-    }
-    const routeColorMap = new Map<string, { color: string; priority: number }>();
-    for (const r of gtfs.routes) {
-      if (!filteredRouteIds.has(r.route_id)) continue;
-      const mode = routeTypeToMode(Number(r.route_type));
-      const color = r.route_color ? `#${r.route_color}` : modeColors[mode];
-      // priority: metro > cable > lineo
-      const priority = mode === 'metro' ? 3 : mode === 'cable' ? 2 : 1;
-      routeColorMap.set(r.route_id, { color, priority });
     }
     const stopColor = new Map<string, string>();
     for (const st of gtfs.stopTimes) {
@@ -108,7 +112,6 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
       if (!existing) {
         stopColor.set(st.stop_id, rc.color);
       } else {
-        // Keep higher priority color
         const existingRoute = [...routeColorMap.values()].find(v => v.color === existing);
         if (existingRoute && rc.priority > existingRoute.priority) {
           stopColor.set(st.stop_id, rc.color);
@@ -116,8 +119,43 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
       }
     }
     return stopColor;
-  }, [gtfs, filteredRouteIds]);
+  }, [gtfs, filteredRouteIds, routeColorMap]);
 
+  // Build ordered stop sequences per route (one representative trip per route+direction)
+  const routeLines = useMemo(() => {
+    const tripRoute = new Map<string, string>();
+    for (const t of gtfs.trips) {
+      if (filteredRouteIds.has(t.route_id)) tripRoute.set(t.trip_id, t.route_id);
+    }
+    // Group stop_times by trip
+    const tripStops = new Map<string, { stop_id: string; seq: number }[]>();
+    for (const st of gtfs.stopTimes) {
+      if (!tripRoute.has(st.trip_id)) continue;
+      if (!tripStops.has(st.trip_id)) tripStops.set(st.trip_id, []);
+      tripStops.get(st.trip_id)!.push({ stop_id: st.stop_id, seq: st.stop_sequence });
+    }
+    // Pick the longest trip per route+direction as representative
+    const bestTrips = new Map<string, { stop_id: string; seq: number }[]>();
+    for (const [tripId, stops] of tripStops) {
+      const routeId = tripRoute.get(tripId)!;
+      const trip = gtfs.trips.find(t => t.trip_id === tripId);
+      const dirKey = `${routeId}__${trip?.direction_id ?? '0'}`;
+      const existing = bestTrips.get(dirKey);
+      if (!existing || stops.length > existing.length) {
+        bestTrips.set(dirKey, stops);
+      }
+    }
+    // Build line data
+    const lines: { routeId: string; color: string; stopIds: string[] }[] = [];
+    for (const [dirKey, stops] of bestTrips) {
+      const routeId = dirKey.split('__')[0];
+      const rc = routeColorMap.get(routeId);
+      if (!rc) continue;
+      stops.sort((a, b) => a.seq - b.seq);
+      lines.push({ routeId, color: rc.color, stopIds: stops.map(s => s.stop_id) });
+    }
+    return lines;
+  }, [gtfs, filteredRouteIds, routeColorMap]);
   useEffect(() => {
     if (!svgRef.current || !centerStop || nodes.length === 0) return;
     const svg = d3.select(svgRef.current);
@@ -163,23 +201,57 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
       return Math.atan2(y, x); // radians, 0 = north
     };
 
-    // Plot stops
-    const n = nodes.length;
-    const dotRadius = Math.max(2, Math.min(5, 200 / Math.sqrt(n)));
-
-    nodes.forEach((node) => {
+    // Precompute node positions
+    const nodePositions = new Map<string, { x: number; y: number }>();
+    for (const node of nodes) {
       const r = rScale(node.travelTime);
       const angle = bearingTo(node.lat, node.lon) - Math.PI / 2;
-      const x = cx + Math.cos(angle) * r;
-      const y = cy + Math.sin(angle) * r;
+      nodePositions.set(node.stopId, {
+        x: cx + Math.cos(angle) * r,
+        y: cy + Math.sin(angle) * r,
+      });
+    }
+    // Also add center position
+    nodePositions.set(centerId!, { x: cx, y: cy });
+
+    // Draw route lines (traces)
+    const line = d3.line<{ x: number; y: number }>()
+      .x(d => d.x).y(d => d.y)
+      .curve(d3.curveCatmullRom.alpha(0.5));
+
+    for (const rl of routeLines) {
+      const points: { x: number; y: number }[] = [];
+      for (const stopId of rl.stopIds) {
+        const pos = nodePositions.get(stopId);
+        if (pos) points.push(pos);
+      }
+      if (points.length < 2) continue;
+      content.append('path')
+        .attr('d', line(points)!)
+        .attr('fill', 'none')
+        .attr('stroke', rl.color)
+        .attr('stroke-width', 2.5)
+        .attr('stroke-opacity', 0.7)
+        .attr('stroke-linecap', 'round')
+        .attr('stroke-linejoin', 'round');
+    }
+
+    // Plot stops
+    const n = nodes.length;
+    const dotRadius = Math.max(3, Math.min(5, 200 / Math.sqrt(n)));
+
+    nodes.forEach((node) => {
+      const pos = nodePositions.get(node.stopId);
+      if (!pos) return;
+      const { x, y } = pos;
       const color = stopRouteColor.get(node.stopId) ?? BAND_COLORS[Math.max(0, Math.min(Math.floor(node.band / 5) - 1, BAND_COLORS.length - 1))];
 
       content.append('circle')
         .attr('cx', x).attr('cy', y).attr('r', dotRadius)
         .attr('fill', color)
-        .attr('fill-opacity', 0.75)
-        .attr('stroke', color)
-        .attr('stroke-width', 0.5)
+        .attr('fill-opacity', 0.9)
+        .attr('stroke', 'hsl(var(--background))')
+        .attr('stroke-width', 1)
         .attr('cursor', 'pointer')
         .on('mouseenter', function (event) {
           d3.select(this).attr('r', dotRadius * 2).attr('fill-opacity', 1);
@@ -197,7 +269,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
           }
         })
         .on('mouseleave', function () {
-          d3.select(this).attr('r', dotRadius).attr('fill-opacity', 0.75);
+          d3.select(this).attr('r', dotRadius).attr('fill-opacity', 0.9);
           if (tooltipRef.current) tooltipRef.current.style.opacity = '0';
         });
     });
@@ -244,7 +316,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
     zoomRef.current = zoom;
 
     return () => { svg.on('.zoom', null); };
-  }, [nodes, centerStop, bands, maxMin, cx, cy, size, stopRouteColor]);
+  }, [nodes, centerStop, bands, maxMin, cx, cy, size, stopRouteColor, routeLines, centerId]);
 
   const resetZoom = useCallback(() => {
     if (svgRef.current && zoomRef.current) d3.select(svgRef.current).transition().duration(400).call(zoomRef.current.transform, d3.zoomIdentity);
