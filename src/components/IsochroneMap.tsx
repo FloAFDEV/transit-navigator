@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Polygon, Tooltip, useMap } from 'react-leaflet';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { MapContainer, TileLayer, CircleMarker, Polygon, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { IsochroneNode } from '@/lib/isochrone';
 
@@ -41,6 +41,52 @@ function convexHull(pts: [number, number][]): [number, number][] {
   lower.pop();
   upper.pop();
   return [...lower, ...upper];
+}
+
+// Spatial grid sampling: keeps the most accessible stop (lowest travelTime) per cell.
+// Always preserves the selected stop even if it was displaced by a closer neighbour.
+function gridSample(
+  nodes: IsochroneNode[],
+  cellSize: number,
+  selectedStopId?: string | null,
+): IsochroneNode[] {
+  const sorted = [...nodes].sort((a, b) => a.travelTime - b.travelTime);
+  const grid = new Map<string, IsochroneNode>();
+
+  for (const node of sorted) {
+    const key = `${Math.floor(node.lat / cellSize)},${Math.floor(node.lon / cellSize)}`;
+    if (!grid.has(key)) grid.set(key, node);
+  }
+
+  const result = Array.from(grid.values());
+
+  if (selectedStopId && !result.some(n => n.stopId === selectedStopId)) {
+    const sel = nodes.find(n => n.stopId === selectedStopId);
+    if (sel) result.push(sel);
+  }
+
+  return result;
+}
+
+// Zoom thresholds for LOD levels
+const LOD_HIGH = 14;    // >= 14: show all stops
+const LOD_MID = 12;     // 12–13: medium density (~800m grid)
+// < 12: low density (~2km grid, hubs only)
+
+const CELL_MID = 0.008; // ~800m at mid latitudes
+const CELL_LOW = 0.020; // ~2km at mid latitudes
+
+function applyLod(nodes: IsochroneNode[], zoom: number, selectedStopId?: string | null): IsochroneNode[] {
+  if (zoom >= LOD_HIGH) return nodes;
+  if (zoom >= LOD_MID) return gridSample(nodes, CELL_MID, selectedStopId);
+  return gridSample(nodes, CELL_LOW, selectedStopId);
+}
+
+function ZoomTracker({ onZoom }: { onZoom: (z: number) => void }) {
+  const map = useMap();
+  useMapEvents({ zoom: () => onZoom(map.getZoom()) });
+  useEffect(() => { onZoom(map.getZoom()); }, [map, onZoom]);
+  return null;
 }
 
 function FitBounds({ nodes, centerStop }: { nodes: IsochroneNode[]; centerStop: CenterStop | null }) {
@@ -89,10 +135,17 @@ function FlyToSelected({
 
 const IsochroneMap: React.FC<Props> = ({ nodes, centerStop, selectedStopId, onSelectStop, stopPositions }) => {
   const [hoveredStopId, setHoveredStopId] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(12);
+
   const hull = convexHull(nodes.map(n => [n.lat, n.lon]));
   const defaultCenter: [number, number] = centerStop
     ? [centerStop.stop_lat, centerStop.stop_lon]
     : [43.6, 1.44];
+
+  const visibleNodes = useMemo(
+    () => applyLod(nodes, zoom, selectedStopId),
+    [nodes, zoom, selectedStopId],
+  );
 
   return (
     <div style={{ height: 450, borderRadius: 12, overflow: 'hidden', boxShadow: '0 2px 16px rgba(0,0,0,0.13)' }}>
@@ -101,6 +154,7 @@ const IsochroneMap: React.FC<Props> = ({ nodes, centerStop, selectedStopId, onSe
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
+        <ZoomTracker onZoom={setZoom} />
         <FitBounds nodes={nodes} centerStop={centerStop} />
         <FlyToSelected selectedStopId={selectedStopId} nodes={nodes} stopPositions={stopPositions} />
 
@@ -111,7 +165,7 @@ const IsochroneMap: React.FC<Props> = ({ nodes, centerStop, selectedStopId, onSe
           />
         )}
 
-        {nodes.map(node => {
+        {visibleNodes.map(node => {
           const isSelected = node.stopId === selectedStopId;
           const isHovered = node.stopId === hoveredStopId;
           const base = bandColor(node.band);
