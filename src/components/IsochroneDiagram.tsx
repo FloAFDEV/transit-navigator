@@ -41,14 +41,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId
   useEffect(() => { onSelectStopRef.current = onSelectStop; }, [onSelectStop]);
 
   const filteredRouteIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const route of gtfs.routes) {
-      const mode = routeTypeToMode(Number(route.route_type));
-      const name = (route.route_short_name || route.route_long_name || '').toLowerCase();
-      const isLineo = name.includes('lineo') || name.includes('linéo') || /^l\d+$/i.test(name.trim());
-      if (mode === 'metro' || mode === 'tram' || mode === 'cable' || isLineo) ids.add(route.route_id);
-    }
-    return ids;
+    return new Set(gtfs.routes.map(r => r.route_id));
   }, [gtfs.routes]);
 
   const allowedTripIds = useMemo(() => {
@@ -104,7 +97,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId
       if (!filteredRouteIds.has(r.route_id)) continue;
       const mode = routeTypeToMode(Number(r.route_type));
       const color = r.route_color ? `#${r.route_color}` : modeColors[mode];
-      const priority = mode === 'metro' ? 3 : mode === 'cable' ? 2 : mode === 'tram' ? 2 : 1;
+      const priority = mode === 'metro' ? 4 : mode === 'tram' ? 3 : mode === 'cable' ? 3 : mode === 'bus' ? 2 : 1;
       map.set(r.route_id, { color, priority });
     }
     return map;
@@ -429,7 +422,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId
                 </div>
               ))}
             </div>
-            <p className="text-[10px] text-muted-foreground mt-2">Métro · Tram · Téléo · Linéo uniquement</p>
+            <p className="text-[10px] text-muted-foreground mt-2">Tous modes inclus</p>
           </div>
 
           <div className="bg-card border border-border rounded-lg p-3">
