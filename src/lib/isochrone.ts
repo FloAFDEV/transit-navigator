@@ -122,8 +122,31 @@ export function dijkstra(graph: Map<string, TravelEdge[]>, startId: string): Map
   return dist;
 }
 
+// --- In-memory caches (module-level, per browser session) ---
+// Dijkstra results keyed by startId: avoids recomputing when only maxMin changes.
+// Isochrone results keyed by `${startId}:${maxMin}`: avoids recomputing on revisit.
+// Both caches are invalidated together when a new GTFS file is loaded.
+
+const _dijkstraCache = new Map<string, Map<string, number>>();
+const _isochroneCache = new Map<string, IsochroneNode[]>();
+const CACHE_MAX = 40;
+
+function _evict<K, V>(cache: Map<K, V>): void {
+  if (cache.size >= CACHE_MAX) {
+    // Remove the oldest entry (Maps preserve insertion order).
+    cache.delete(cache.keys().next().value!);
+  }
+}
+
+/** Clear both caches — call this when a new GTFS dataset is loaded. */
+export function clearIsochroneCache(): void {
+  _dijkstraCache.clear();
+  _isochroneCache.clear();
+}
+
 /**
  * Compute isochrone nodes from a center station.
+ * Results are cached: Dijkstra by startId, final nodes by startId+maxMin.
  */
 export function computeIsochrone(
   gtfs: ParsedGtfs,
@@ -131,7 +154,18 @@ export function computeIsochrone(
   centerStopId: string,
   maxMinutes: number = 30,
 ): IsochroneNode[] {
-  const distances = dijkstra(graph, centerStopId);
+  const isoKey = `${centerStopId}:${maxMinutes}`;
+  const cached = _isochroneCache.get(isoKey);
+  if (cached) return cached;
+
+  // Reuse Dijkstra result if available (e.g. user only changed maxMin).
+  let distances = _dijkstraCache.get(centerStopId);
+  if (!distances) {
+    distances = dijkstra(graph, centerStopId);
+    _evict(_dijkstraCache);
+    _dijkstraCache.set(centerStopId, distances);
+  }
+
   const stopMap = new Map(gtfs.stops.map(s => [s.stop_id, s]));
   const maxSeconds = maxMinutes * 60;
 
@@ -155,6 +189,9 @@ export function computeIsochrone(
   }
 
   nodes.sort((a, b) => a.travelTime - b.travelTime);
+
+  _evict(_isochroneCache);
+  _isochroneCache.set(isoKey, nodes);
   return nodes;
 }
 

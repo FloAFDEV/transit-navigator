@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import GtfsUpload from '@/components/GtfsUpload';
 import CircularDensityDiagram from '@/components/CircularDensityDiagram';
 import TransitDiagram from '@/components/TransitDiagram';
@@ -11,10 +11,13 @@ import RouteDetailPanel from '@/components/RouteDetailPanel';
 import GlossaryPanel from '@/components/GlossaryPanel';
 import PdfExportButton from '@/components/PdfExportButton';
 import PresentationView from '@/components/PresentationView';
+import GlobalSearch from '@/components/GlobalSearch';
 import { parseGtfsZip } from '@/lib/gtfs-parser';
 import { analyzeNetwork, type AnalysisResult } from '@/lib/network-analysis';
 import type { TransportMode, ParsedGtfs, GtfsStop } from '@/lib/gtfs-types';
 import type { IsochroneNode } from '@/lib/isochrone';
+import { clearIsochroneCache } from '@/lib/isochrone';
+import { buildSearchIndex, type SearchIndex, type SearchStop, type SearchRoute } from '@/lib/search';
 import { modeLabels, modeColors } from '@/lib/gtfs-types';
 import { exportPngFromSvg } from '@/lib/csv-export';
 import { saveShare, loadShare, deserializeAnalysis } from '@/lib/share';
@@ -48,6 +51,7 @@ const Index: React.FC = () => {
   });
   const [shareCopied, setShareCopied] = useState(false);
   const [selectedStopId, setSelectedStopId] = useState<string | null>(null);
+  const [isochroneForceCenterId, setIsochroneForceCenterId] = useState<string | null>(null);
 
   const densityRef = useRef<HTMLDivElement>(null);
   const transitRef = useRef<HTMLDivElement>(null);
@@ -96,8 +100,16 @@ const Index: React.FC = () => {
     window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`);
   }, [activeTab, filterMode, selectedRouteId, analysis]);
 
+  // Search index: built once per GTFS load, reused for all queries.
+  const searchIndex = useMemo<SearchIndex | null>(() => {
+    if (!gtfsData || !analysis) return null;
+    return buildSearchIndex(gtfsData, analysis);
+  }, [gtfsData, analysis]);
+
   const handleFile = useCallback(async (file: File) => {
     setIsLoading(true);
+    clearIsochroneCache();
+    setIsochroneForceCenterId(null);
     try {
       const gtfs = await parseGtfsZip(file);
       const result = analyzeNetwork(gtfs);
@@ -111,6 +123,17 @@ const Index: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
+  }, []);
+
+  // Search handlers: stop → switch to isochrone tab and set center.
+  // Route → highlight in current view.
+  const handleSearchStop = useCallback((stop: SearchStop) => {
+    setIsochroneForceCenterId(stop.stopId);
+    setActiveTab('isochrone');
+  }, []);
+
+  const handleSearchRoute = useCallback((route: SearchRoute) => {
+    setSelectedRouteId(route.routeId);
   }, []);
 
   const handleSelectRoute = useCallback((routeId: string | null) => setSelectedRouteId(routeId), []);
@@ -204,6 +227,11 @@ const Index: React.FC = () => {
         <div className="flex items-center gap-4">
           <h1 className="text-sm font-semibold text-foreground tracking-tight">GTFS Analyzer</h1>
           <span className="text-xs text-muted-foreground font-mono">{fileName}</span>
+          <GlobalSearch
+            index={searchIndex}
+            onSelectStop={handleSearchStop}
+            onSelectRoute={handleSearchRoute}
+          />
           <Select
             value={selectedRouteId ?? '__none__'}
             onValueChange={(val) => handleSelectRoute(val === '__none__' ? null : val)}
@@ -337,6 +365,7 @@ const Index: React.FC = () => {
                 onNodesChange={handleIsochroneChange}
                 selectedStopId={selectedStopId}
                 onSelectStop={setSelectedStopId}
+                forceCenterId={isochroneForceCenterId}
               />
             )}
             {!gtfsData && isochroneSnapshot.nodes.length > 0 && (

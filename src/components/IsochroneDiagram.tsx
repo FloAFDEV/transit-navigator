@@ -15,6 +15,8 @@ interface Props {
   onNodesChange?: (nodes: IsochroneNode[], centerId: string | null, maxMin: number, centerStop: GtfsStop | null) => void;
   selectedStopId?: string | null;
   onSelectStop?: (id: string) => void;
+  /** When set, overrides the internal center selection (e.g. from global search). */
+  forceCenterId?: string | null;
 }
 
 const BAND_COLORS = [
@@ -26,7 +28,7 @@ const BAND_COLORS = [
   'hsl(280, 55%, 48%)',
 ];
 
-const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId, onSelectStop }) => {
+const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId, onSelectStop, forceCenterId }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -64,6 +66,11 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId
       setCenterId(found?.stopId ?? candidates[0].stopId);
     }
   }, [candidates, centerId]);
+
+  // Honour external center override (e.g. from global search selecting an arbitrary stop).
+  useEffect(() => {
+    if (forceCenterId && forceCenterId !== centerId) setCenterId(forceCenterId);
+  }, [forceCenterId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const nodes = useMemo(() => {
     if (!centerId) return [];
