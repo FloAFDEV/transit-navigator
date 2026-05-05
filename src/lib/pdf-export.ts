@@ -1,5 +1,4 @@
 import jsPDF from 'jspdf';
-import { toPng } from 'html-to-image';
 import type { AnalysisResult } from './network-analysis';
 import { modeLabels } from './gtfs-types';
 import { generateSignageRecommendations } from '@/components/SignageGuide';
@@ -14,68 +13,62 @@ interface ExportOptions {
   onProgress?: (step: string) => void;
 }
 
-async function waitForImages(el: HTMLElement): Promise<void> {
-  const imgs = Array.from(el.querySelectorAll<HTMLImageElement>('img'));
-  await Promise.all(
-    imgs.map(img =>
-      img.complete
-        ? Promise.resolve()
-        : new Promise<void>(resolve => {
-            img.onload = () => resolve();
-            img.onerror = () => resolve();
-          }),
-    ),
-  );
-}
-
-async function captureElement(el: HTMLElement, hasLeaflet: boolean): Promise<string | null> {
-  const style = getComputedStyle(el);
-  const wasHidden = style.display === 'none';
-
-  if (wasHidden) {
-    el.style.display = 'block';
-    el.style.position = 'fixed';
-    el.style.top = '-99999px';
-    el.style.left = '0';
-    el.style.width = '1100px';
-    el.style.zIndex = '-1';
-    el.style.visibility = 'visible';
-    el.style.pointerEvents = 'none';
-  }
-
-  try {
-    await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
-
-    if (hasLeaflet) {
-      const map = el.querySelector('.leaflet-container') as HTMLElement | null;
-      if (map) {
-        window.dispatchEvent(new Event('resize'));
-        await new Promise(r => setTimeout(r, 2000));
+function inlineVars(orig: SVGSVGElement, clone: SVGSVGElement): void {
+  const origEls = [orig as SVGElement, ...Array.from(orig.querySelectorAll<SVGElement>('*'))];
+  const cloneEls = [clone as SVGElement, ...Array.from(clone.querySelectorAll<SVGElement>('*'))];
+  origEls.forEach((origEl, i) => {
+    const cloneEl = cloneEls[i];
+    if (!cloneEl) return;
+    const cs = getComputedStyle(origEl);
+    for (const attr of ['fill', 'stroke', 'color'] as const) {
+      const raw = cloneEl.getAttribute(attr) ?? '';
+      if (raw.includes('var(')) {
+        const resolved = cs.getPropertyValue(attr).trim();
+        if (resolved) cloneEl.setAttribute(attr, resolved);
       }
     }
+  });
+}
 
-    await waitForImages(el);
+async function captureSvg(container: HTMLElement): Promise<{ dataUrl: string; w: number; h: number } | null> {
+  const origSvg = container.querySelector<SVGSVGElement>('svg');
+  if (!origSvg) return null;
 
-    return await toPng(el, {
-      backgroundColor: '#ffffff',
-      pixelRatio: 2,
-      skipFonts: false,
-      fetchRequestInit: { mode: 'cors' },
-    });
-  } catch {
-    return null;
-  } finally {
-    if (wasHidden) {
-      el.style.display = '';
-      el.style.position = '';
-      el.style.top = '';
-      el.style.left = '';
-      el.style.width = '';
-      el.style.zIndex = '';
-      el.style.visibility = '';
-      el.style.pointerEvents = '';
-    }
-  }
+  const w = origSvg.clientWidth || Number(origSvg.getAttribute('width')) || 600;
+  const h = origSvg.clientHeight || Number(origSvg.getAttribute('height')) || 600;
+
+  const clone = origSvg.cloneNode(true) as SVGSVGElement;
+  clone.setAttribute('width', String(w));
+  clone.setAttribute('height', String(h));
+  inlineVars(origSvg, clone);
+
+  const svgStr = new XMLSerializer().serializeToString(clone);
+  const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+
+  return new Promise<{ dataUrl: string; w: number; h: number } | null>(resolve => {
+    const img = new Image();
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+
+    img.onload = () => {
+      if (!ctx) { URL.revokeObjectURL(url); resolve(null); return; }
+      canvas.width = w * 2;
+      canvas.height = h * 2;
+      ctx.scale(2, 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, w, h);
+      try {
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve({ dataUrl: canvas.toDataURL('image/png'), w, h });
+      } catch {
+        resolve(null);
+      }
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    img.src = url;
+  });
 }
 
 export async function exportPdfReport({
@@ -93,11 +86,7 @@ export async function exportPdfReport({
   const contentW = pageW - margin * 2;
   let y = margin;
 
-  const addText = (
-    text: string,
-    size: number,
-    opts?: { bold?: boolean; color?: [number, number, number] },
-  ) => {
+  const addText = (text: string, size: number, opts?: { bold?: boolean; color?: [number, number, number] }) => {
     pdf.setFontSize(size);
     pdf.setFont('helvetica', opts?.bold ? 'bold' : 'normal');
     if (opts?.color) pdf.setTextColor(...opts.color);
@@ -116,11 +105,7 @@ export async function exportPdfReport({
   y += 4;
   addText(`Rapport d'analyse — ${fileName}`, 11, { color: [120, 120, 120] });
   y += 2;
-  addText(
-    `Généré le ${new Date().toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' })}`,
-    9,
-    { color: [150, 150, 150] },
-  );
+  addText(`Généré le ${new Date().toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' })}`, 9, { color: [150, 150, 150] });
   y += 10;
 
   const m = analysis.networkMetrics;
@@ -133,46 +118,39 @@ export async function exportPdfReport({
     `Friction moyenne : ${m.averageFriction.toFixed(2)}`,
     `Redondance : ${(m.networkRedundancy * 100).toFixed(1)}%`,
     `Lisibilité : ${(m.readabilityScore * 100).toFixed(0)}%`,
-  ]) {
-    addText(`  • ${line}`, 9);
-  }
+  ]) addText(`  • ${line}`, 9);
 
   y += 4;
   addText('Répartition par mode', 12, { bold: true });
   y += 2;
   const modeCounts = new Map<string, number>();
   for (const r of analysis.routes) modeCounts.set(r.mode, (modeCounts.get(r.mode) || 0) + 1);
-  for (const [mode, count] of modeCounts) {
+  for (const [mode, count] of modeCounts)
     addText(`  • ${modeLabels[mode as keyof typeof modeLabels] || mode} : ${count} lignes`, 9);
-  }
 
-  const addImagePage = (dataUrl: string, title: string) => {
+  const views: [HTMLElement | null | undefined, string][] = [
+    [densityRef, 'Vue 1 — Densité circulaire'],
+    [transitRef, 'Vue 2 — Correspondances'],
+    [frictionRef, 'Vue 3 — Friction'],
+    [isochroneRef, 'Vue 4 — Isochrone radial'],
+  ];
+
+  for (const [el, title] of views) {
+    if (!el) continue;
+    onProgress?.(`Capture : ${title.split('—')[1]?.trim() ?? title}`);
+    const result = await captureSvg(el);
+    if (!result) continue;
+    const { dataUrl, w, h } = result;
     pdf.addPage();
     y = margin;
     addText(title, 16, { bold: true });
     y += 4;
-    const img = new Image();
-    img.src = dataUrl;
+    const ratio = h / w;
     const maxH = 240;
-    const ratio = img.height / img.width || 0.75;
-    const finalW = Math.min(contentW, maxH / ratio);
-    const finalH = finalW * ratio;
+    const finalW = ratio > 0 ? Math.min(contentW, maxH / ratio) : contentW;
+    const finalH = Math.min(finalW * ratio, maxH);
     pdf.addImage(dataUrl, 'PNG', margin, y, finalW, finalH);
     y += finalH + 4;
-  };
-
-  const views: [HTMLElement | null | undefined, string, boolean][] = [
-    [densityRef, 'Vue 1 — Diagramme de densité circulaire', false],
-    [transitRef, 'Vue 2 — Diagramme de correspondances', false],
-    [frictionRef, 'Vue 3 — Analyse de friction', false],
-    [isochroneRef, 'Vue 4 — Carte isochrone', true],
-  ];
-
-  for (const [el, title, hasLeaflet] of views) {
-    if (!el) continue;
-    onProgress?.(`Capture : ${title.split('—')[1]?.trim() ?? title}`);
-    const dataUrl = await captureElement(el, hasLeaflet);
-    if (dataUrl) addImagePage(dataUrl, title);
   }
 
   pdf.addPage();
@@ -181,10 +159,7 @@ export async function exportPdfReport({
   y += 4;
   for (const s of analysis.stationMetrics.slice(0, 20)) {
     ensureSpace(6);
-    addText(
-      `${s.frictionIndex.toFixed(2)}  ${s.stopName} — ${s.routeCount} lignes, ${s.correspondences} corr.`,
-      8,
-    );
+    addText(`${s.frictionIndex.toFixed(2)}  ${s.stopName} — ${s.routeCount} lignes, ${s.correspondences} corr.`, 8);
   }
 
   y += 6;
@@ -196,11 +171,7 @@ export async function exportPdfReport({
     routeConns.set(c.routeA, (routeConns.get(c.routeA) || 0) + c.weight);
     routeConns.set(c.routeB, (routeConns.get(c.routeB) || 0) + c.weight);
   }
-  const topRoutes = analysis.routes
-    .map(r => ({ ...r, connections: routeConns.get(r.routeId) || 0 }))
-    .sort((a, b) => b.connections - a.connections)
-    .slice(0, 15);
-  for (const r of topRoutes) {
+  for (const r of analysis.routes.map(r => ({ ...r, connections: routeConns.get(r.routeId) || 0 })).sort((a, b) => b.connections - a.connections).slice(0, 15)) {
     ensureSpace(6);
     addText(`${r.name} — ${r.connections} connexions, ${r.stopCount} arrêts`, 8);
   }
@@ -209,27 +180,16 @@ export async function exportPdfReport({
   y = margin;
   addText('Recommandations signalétiques — Top 10 stations', 14, { bold: true });
   y += 2;
-  addText("Actions terrain basées sur l'analyse de friction et de centralité", 9, {
-    color: [120, 120, 120],
-  });
+  addText("Actions terrain basées sur l'analyse de friction et de centralité", 9, { color: [120, 120, 120] });
   y += 6;
 
-  const recommendations = generateSignageRecommendations(analysis);
-  for (const rec of recommendations) {
+  for (const rec of generateSignageRecommendations(analysis)) {
     ensureSpace(30);
-    const levelLabel =
-      rec.level === 'critical' ? '! CRITIQUE' : rec.level === 'warning' ? '~ ATTENTION' : '- STANDARD';
+    const levelLabel = rec.level === 'critical' ? '! CRITIQUE' : rec.level === 'warning' ? '~ ATTENTION' : '- STANDARD';
     addText(`${levelLabel} — ${rec.station}`, 10, { bold: true });
-    addText(
-      `  Friction: ${rec.friction.toFixed(2)} · ${rec.routeCount} lignes · ${rec.correspondences} correspondances`,
-      8,
-      { color: [100, 100, 100] },
-    );
+    addText(`  Friction: ${rec.friction.toFixed(2)} · ${rec.routeCount} lignes · ${rec.correspondences} correspondances`, 8, { color: [100, 100, 100] });
     y += 1;
-    for (const action of rec.actions) {
-      ensureSpace(5);
-      addText(`    -> ${action}`, 8);
-    }
+    for (const action of rec.actions) { ensureSpace(5); addText(`    -> ${action}`, 8); }
     y += 3;
   }
 
