@@ -8,6 +8,7 @@ import { exportSvg } from '@/lib/svg-export';
 import { Download, RotateCcw, ZoomIn, ZoomOut, Clock, MapPin } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import HowToRead from './HowToRead';
+import IsochroneMap from './IsochroneMap';
 
 interface Props {
   gtfs: ParsedGtfs;
@@ -485,6 +486,12 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
         {nodes.length} arrêts accessibles en ≤ {maxMin} min depuis {centerStop?.stop_name ?? '—'}
         {' · molette pour zoomer'}
       </div>
+
+      {nodes.length > 0 && (
+        <div className="w-full max-w-3xl">
+          <IsochroneMap nodes={nodes} centerStop={centerStop} />
+        </div>
+      )}
     </div>
   );
 };
