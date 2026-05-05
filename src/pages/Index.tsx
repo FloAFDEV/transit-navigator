@@ -10,17 +10,26 @@ import SignageGuide from '@/components/SignageGuide';
 import RouteDetailPanel from '@/components/RouteDetailPanel';
 import GlossaryPanel from '@/components/GlossaryPanel';
 import PdfExportButton from '@/components/PdfExportButton';
+import PresentationView from '@/components/PresentationView';
 import { parseGtfsZip } from '@/lib/gtfs-parser';
 import { analyzeNetwork, type AnalysisResult } from '@/lib/network-analysis';
-import type { TransportMode, ParsedGtfs } from '@/lib/gtfs-types';
-import { modeLabels } from '@/lib/gtfs-types';
+import type { TransportMode, ParsedGtfs, GtfsStop } from '@/lib/gtfs-types';
+import type { IsochroneNode } from '@/lib/isochrone';
+import { modeLabels, modeColors } from '@/lib/gtfs-types';
 import { exportPngFromSvg } from '@/lib/csv-export';
+import { saveShare, loadShare, deserializeAnalysis } from '@/lib/share';
 import { toast } from 'sonner';
-import { Share2, Image } from 'lucide-react';
+import { Share2, Image, Monitor } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { modeColors } from '@/lib/gtfs-types';
 
 type ViewTab = 'density' | 'transit' | 'topology' | 'friction' | 'isochrone';
+
+interface IsochroneSnapshot {
+  nodes: IsochroneNode[];
+  centerId: string | null;
+  maxMin: number;
+  centerStop: GtfsStop | null;
+}
 
 const Index: React.FC = () => {
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
@@ -30,32 +39,60 @@ const Index: React.FC = () => {
   const [filterMode, setFilterMode] = useState<TransportMode | 'all'>('all');
   const [fileName, setFileName] = useState('');
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
+  const [presentationMode, setPresentationMode] = useState(false);
+  const [isochroneSnapshot, setIsochroneSnapshot] = useState<IsochroneSnapshot>({
+    nodes: [],
+    centerId: null,
+    maxMin: 30,
+    centerStop: null,
+  });
+  const [shareCopied, setShareCopied] = useState(false);
+
   const densityRef = useRef<HTMLDivElement>(null);
   const transitRef = useRef<HTMLDivElement>(null);
   const frictionRef = useRef<HTMLDivElement>(null);
   const topologyRef = useRef<HTMLDivElement>(null);
   const isochroneRef = useRef<HTMLDivElement>(null);
 
-  // Restore state from URL on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+
+    const shareId = params.get('share');
+    if (shareId) {
+      const data = loadShare(shareId);
+      if (data) {
+        const restored = deserializeAnalysis(data);
+        setAnalysis(restored);
+        setFileName(data.fileName);
+        setIsochroneSnapshot({
+          nodes: data.isochroneNodes,
+          centerId: data.centerId,
+          maxMin: data.maxMin,
+          centerStop: data.stops.find(s => s.stop_id === data.centerId) ?? null,
+        });
+        toast.success('Session restaurée depuis le lien partagé');
+      } else {
+        toast.error('Lien expiré ou données introuvables');
+      }
+    }
+
+    if (params.get('mode') === 'present') setPresentationMode(true);
+
     const tab = params.get('tab') as ViewTab | null;
     const mode = params.get('mode') as TransportMode | 'all' | null;
     const route = params.get('route');
     if (tab && ['density', 'transit', 'topology', 'friction', 'isochrone'].includes(tab)) setActiveTab(tab);
-    if (mode) setFilterMode(mode);
+    if (mode && mode !== 'present') setFilterMode(mode as TransportMode | 'all');
     if (route) setSelectedRouteId(route);
   }, []);
 
-  // Sync state to URL
   useEffect(() => {
     if (!analysis) return;
     const params = new URLSearchParams();
     params.set('tab', activeTab);
     if (filterMode !== 'all') params.set('mode', filterMode);
     if (selectedRouteId) params.set('route', selectedRouteId);
-    const newUrl = `${window.location.pathname}?${params.toString()}`;
-    window.history.replaceState({}, '', newUrl);
+    window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`);
   }, [activeTab, filterMode, selectedRouteId, analysis]);
 
   const handleFile = useCallback(async (file: File) => {
@@ -64,7 +101,6 @@ const Index: React.FC = () => {
       const gtfs = await parseGtfsZip(file);
       const result = analyzeNetwork(gtfs);
       setGtfsData(gtfs);
-      setAnalysis(result);
       setAnalysis(result);
       setFileName(file.name);
       setSelectedRouteId(null);
@@ -76,14 +112,41 @@ const Index: React.FC = () => {
     }
   }, []);
 
-  const handleSelectRoute = useCallback((routeId: string | null) => {
-    setSelectedRouteId(routeId);
-  }, []);
+  const handleSelectRoute = useCallback((routeId: string | null) => setSelectedRouteId(routeId), []);
+
+  const handleIsochroneChange = useCallback(
+    (nodes: IsochroneNode[], centerId: string | null, maxMin: number, centerStop: GtfsStop | null) => {
+      setIsochroneSnapshot({ nodes, centerId, maxMin, centerStop });
+    },
+    [],
+  );
 
   const handleShare = useCallback(() => {
-    navigator.clipboard.writeText(window.location.href);
-    toast.success('Lien copié dans le presse-papier');
-  }, []);
+    if (!analysis) return;
+    const stops = gtfsData?.stops ?? isochroneSnapshot.nodes.map(n => ({
+      stop_id: n.stopId,
+      stop_name: n.stopName,
+      stop_lat: n.lat,
+      stop_lon: n.lon,
+    }));
+    try {
+      const id = saveShare(
+        analysis,
+        stops,
+        fileName,
+        isochroneSnapshot.nodes,
+        isochroneSnapshot.centerId,
+        isochroneSnapshot.maxMin,
+      );
+      const url = `${window.location.origin}${window.location.pathname}?share=${id}`;
+      navigator.clipboard.writeText(url);
+      setShareCopied(true);
+      toast.success('Lien copié dans le presse-papier');
+      setTimeout(() => setShareCopied(false), 2500);
+    } catch {
+      toast.error('Données trop volumineuses pour le partage');
+    }
+  }, [analysis, gtfsData, fileName, isochroneSnapshot]);
 
   const handleExportPng = useCallback(() => {
     const refMap: Record<ViewTab, React.RefObject<HTMLDivElement>> = {
@@ -110,6 +173,20 @@ const Index: React.FC = () => {
     );
   }
 
+  if (presentationMode) {
+    return (
+      <PresentationView
+        analysis={analysis}
+        stops={gtfsData?.stops ?? []}
+        isochroneNodes={isochroneSnapshot.nodes}
+        centerStop={isochroneSnapshot.centerStop}
+        maxMin={isochroneSnapshot.maxMin}
+        fileName={fileName}
+        onExit={() => setPresentationMode(false)}
+      />
+    );
+  }
+
   const tabs: { key: ViewTab; label: string }[] = [
     { key: 'density', label: 'Densité circulaire' },
     { key: 'transit', label: 'Correspondances' },
@@ -122,7 +199,6 @@ const Index: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
       <header className="border-b border-border px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <h1 className="text-sm font-semibold text-foreground tracking-tight">GTFS Analyzer</h1>
@@ -139,10 +215,7 @@ const Index: React.FC = () => {
               {analysis.routes.map((r) => (
                 <SelectItem key={r.routeId} value={r.routeId}>
                   <span className="flex items-center gap-2">
-                    <span
-                      className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: modeColors[r.mode] }}
-                    />
+                    <span className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: modeColors[r.mode] }} />
                     {r.name} ({modeLabels[r.mode]})
                   </span>
                 </SelectItem>
@@ -166,17 +239,36 @@ const Index: React.FC = () => {
             densityRef={densityRef}
             transitRef={transitRef}
             frictionRef={frictionRef}
+            isochroneRef={isochroneRef}
           />
           <button
-            onClick={handleShare}
+            onClick={() => setPresentationMode(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-secondary text-secondary-foreground hover:bg-accent transition-colors"
+            title="Mode présentation client"
+          >
+            <Monitor className="w-3.5 h-3.5" />
+            Présentation
+          </button>
+          <button
+            onClick={handleShare}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+              shareCopied
+                ? 'bg-green-600 text-white'
+                : 'bg-secondary text-secondary-foreground hover:bg-accent'
+            }`}
             title="Copier le lien partageable"
           >
             <Share2 className="w-3.5 h-3.5" />
-            Partager
+            {shareCopied ? 'Lien copié ✔' : 'Partager'}
           </button>
           <button
-            onClick={() => { setAnalysis(null); setGtfsData(null); setFileName(''); setSelectedRouteId(null); window.history.replaceState({}, '', window.location.pathname); }}
+            onClick={() => {
+              setAnalysis(null);
+              setGtfsData(null);
+              setFileName('');
+              setSelectedRouteId(null);
+              window.history.replaceState({}, '', window.location.pathname);
+            }}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
             Nouveau fichier
@@ -184,7 +276,6 @@ const Index: React.FC = () => {
         </div>
       </header>
 
-      {/* Tabs */}
       <nav className="border-b border-border px-6 flex gap-6">
         {tabs.map(tab => (
           <button
@@ -199,10 +290,8 @@ const Index: React.FC = () => {
         ))}
       </nav>
 
-      {/* Content + Detail Panel */}
       <div className="flex">
         <main className="flex-1 p-6 min-w-0">
-          {/* Mode filter for density view */}
           {activeTab === 'density' && (
             <div className="flex items-center gap-2 mb-6 justify-center">
               {modes.map(mode => {
@@ -212,9 +301,7 @@ const Index: React.FC = () => {
                     key={mode}
                     onClick={() => setFilterMode(mode)}
                     className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                      isActive
-                        ? 'bg-primary text-primary-foreground'
-                        : 'bg-secondary text-secondary-foreground hover:bg-accent'
+                      isActive ? 'bg-primary text-primary-foreground' : 'bg-secondary text-secondary-foreground hover:bg-accent'
                     }`}
                   >
                     {mode === 'all' ? 'Tout' : modeLabels[mode]}
@@ -225,56 +312,42 @@ const Index: React.FC = () => {
           )}
 
           <div ref={densityRef} style={{ display: activeTab === 'density' ? 'block' : 'none' }}>
-            <CircularDensityDiagram
-              analysis={analysis}
-              filterMode={filterMode}
-              selectedRouteId={selectedRouteId}
-              onSelectRoute={handleSelectRoute}
-            />
+            <CircularDensityDiagram analysis={analysis} filterMode={filterMode} selectedRouteId={selectedRouteId} onSelectRoute={handleSelectRoute} />
           </div>
           <div ref={transitRef} style={{ display: activeTab === 'transit' ? 'block' : 'none' }}>
-            <TransitDiagram
-              analysis={analysis}
-              selectedRouteId={selectedRouteId}
-              onSelectRoute={handleSelectRoute}
-            />
+            <TransitDiagram analysis={analysis} selectedRouteId={selectedRouteId} onSelectRoute={handleSelectRoute} />
           </div>
           <div ref={topologyRef} style={{ display: activeTab === 'topology' ? 'block' : 'none' }}>
-            <TopologicalView
-              analysis={analysis}
-              selectedRouteId={selectedRouteId}
-              onSelectRoute={handleSelectRoute}
-            />
+            <TopologicalView analysis={analysis} selectedRouteId={selectedRouteId} onSelectRoute={handleSelectRoute} />
           </div>
           <div ref={frictionRef} style={{ display: activeTab === 'friction' ? 'block' : 'none' }}>
-            <FrictionAnalysis
-              analysis={analysis}
-              selectedRouteId={selectedRouteId}
-              onSelectRoute={handleSelectRoute}
-            />
+            <FrictionAnalysis analysis={analysis} selectedRouteId={selectedRouteId} onSelectRoute={handleSelectRoute} />
           </div>
           <div ref={isochroneRef} style={{ display: activeTab === 'isochrone' ? 'block' : 'none' }}>
-            {gtfsData && <IsochroneDiagram gtfs={gtfsData} />}
+            {gtfsData && (
+              <IsochroneDiagram gtfs={gtfsData} onNodesChange={handleIsochroneChange} />
+            )}
+            {!gtfsData && isochroneSnapshot.nodes.length > 0 && (
+              <div className="flex flex-col items-center gap-4 pt-4">
+                <p className="text-xs text-muted-foreground">Isochrone restauré depuis le lien partagé</p>
+                <IsochroneDiagram
+                  gtfs={{ routes: [], trips: [], stopTimes: [], stops: isochroneSnapshot.nodes.map(n => ({ stop_id: n.stopId, stop_name: n.stopName, stop_lat: n.lat, stop_lon: n.lon })) }}
+                  onNodesChange={handleIsochroneChange}
+                />
+              </div>
+            )}
           </div>
 
-          {/* Signage guide */}
           <div className="mt-8">
             <SignageGuide analysis={analysis} />
           </div>
-
-          {/* Network narrative */}
           <div className="mt-8">
             <NetworkNarrative analysis={analysis} selectedRouteId={selectedRouteId} />
           </div>
         </main>
 
-        {/* Route Detail Panel */}
         {selectedRouteId && (
-          <RouteDetailPanel
-            routeId={selectedRouteId}
-            analysis={analysis}
-            onClose={() => setSelectedRouteId(null)}
-          />
+          <RouteDetailPanel routeId={selectedRouteId} analysis={analysis} onClose={() => setSelectedRouteId(null)} />
         )}
       </div>
     </div>

@@ -12,6 +12,7 @@ import IsochroneMap from './IsochroneMap';
 
 interface Props {
   gtfs: ParsedGtfs;
+  onNodesChange?: (nodes: IsochroneNode[], centerId: string | null, maxMin: number, centerStop: import('@/lib/gtfs-types').GtfsStop | null) => void;
 }
 
 const BAND_COLORS = [
@@ -23,7 +24,7 @@ const BAND_COLORS = [
   'hsl(280, 55%, 48%)', // 30 min — purple
 ];
 
-const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
+const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -77,6 +78,10 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs }) => {
     if (!centerId) return null;
     return gtfs.stops.find(s => s.stop_id === centerId) ?? null;
   }, [gtfs.stops, centerId]);
+
+  useEffect(() => {
+    onNodesChange?.(nodes, centerId, maxMin, centerStop);
+  }, [nodes, centerId, maxMin, centerStop, onNodesChange]);
 
   const bands = useMemo(() => {
     const b: number[] = [];

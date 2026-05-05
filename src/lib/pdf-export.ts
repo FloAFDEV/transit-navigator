@@ -1,8 +1,5 @@
-/**
- * PDF export utility — generates a complete analysis report
- */
 import jsPDF from 'jspdf';
-import html2canvas from 'html2canvas';
+import { toPng } from 'html-to-image';
 import type { AnalysisResult } from './network-analysis';
 import { modeLabels } from './gtfs-types';
 import { generateSignageRecommendations } from '@/components/SignageGuide';
@@ -13,7 +10,72 @@ interface ExportOptions {
   densityRef: HTMLElement | null;
   transitRef: HTMLElement | null;
   frictionRef: HTMLElement | null;
+  isochroneRef?: HTMLElement | null;
   onProgress?: (step: string) => void;
+}
+
+async function waitForImages(el: HTMLElement): Promise<void> {
+  const imgs = Array.from(el.querySelectorAll<HTMLImageElement>('img'));
+  await Promise.all(
+    imgs.map(img =>
+      img.complete
+        ? Promise.resolve()
+        : new Promise<void>(resolve => {
+            img.onload = () => resolve();
+            img.onerror = () => resolve();
+          }),
+    ),
+  );
+}
+
+async function captureElement(el: HTMLElement, hasLeaflet: boolean): Promise<string | null> {
+  const style = getComputedStyle(el);
+  const wasHidden = style.display === 'none';
+
+  if (wasHidden) {
+    el.style.display = 'block';
+    el.style.position = 'fixed';
+    el.style.top = '-99999px';
+    el.style.left = '0';
+    el.style.width = '1100px';
+    el.style.zIndex = '-1';
+    el.style.visibility = 'visible';
+    el.style.pointerEvents = 'none';
+  }
+
+  try {
+    await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+
+    if (hasLeaflet) {
+      const map = el.querySelector('.leaflet-container') as HTMLElement | null;
+      if (map) {
+        window.dispatchEvent(new Event('resize'));
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+
+    await waitForImages(el);
+
+    return await toPng(el, {
+      backgroundColor: '#ffffff',
+      pixelRatio: 2,
+      skipFonts: false,
+      fetchRequestInit: { mode: 'cors' },
+    });
+  } catch {
+    return null;
+  } finally {
+    if (wasHidden) {
+      el.style.display = '';
+      el.style.position = '';
+      el.style.top = '';
+      el.style.left = '';
+      el.style.width = '';
+      el.style.zIndex = '';
+      el.style.visibility = '';
+      el.style.pointerEvents = '';
+    }
+  }
 }
 
 export async function exportPdfReport({
@@ -22,6 +84,7 @@ export async function exportPdfReport({
   densityRef,
   transitRef,
   frictionRef,
+  isochroneRef,
   onProgress,
 }: ExportOptions): Promise<void> {
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
@@ -30,7 +93,11 @@ export async function exportPdfReport({
   const contentW = pageW - margin * 2;
   let y = margin;
 
-  const addText = (text: string, size: number, opts?: { bold?: boolean; color?: [number, number, number]; mono?: boolean }) => {
+  const addText = (
+    text: string,
+    size: number,
+    opts?: { bold?: boolean; color?: [number, number, number] },
+  ) => {
     pdf.setFontSize(size);
     pdf.setFont('helvetica', opts?.bold ? 'bold' : 'normal');
     if (opts?.color) pdf.setTextColor(...opts.color);
@@ -41,116 +108,96 @@ export async function exportPdfReport({
   };
 
   const ensureSpace = (needed: number) => {
-    if (y + needed > 280) {
-      pdf.addPage();
-      y = margin;
-    }
+    if (y + needed > 280) { pdf.addPage(); y = margin; }
   };
 
-  // --- Title page ---
   y = 50;
   addText('GTFS Network Analysis', 22, { bold: true });
   y += 4;
   addText(`Rapport d'analyse — ${fileName}`, 11, { color: [120, 120, 120] });
   y += 2;
-  addText(`Généré le ${new Date().toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' })}`, 9, { color: [150, 150, 150] });
+  addText(
+    `Généré le ${new Date().toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' })}`,
+    9,
+    { color: [150, 150, 150] },
+  );
   y += 10;
 
-  // Network summary
   const m = analysis.networkMetrics;
   addText('Résumé du réseau', 14, { bold: true });
   y += 2;
-  const summaryLines = [
+  for (const line of [
     `Lignes : ${m.totalRoutes}`,
     `Arrêts : ${m.totalStops}`,
     `Correspondances : ${m.totalCorrespondences}`,
     `Friction moyenne : ${m.averageFriction.toFixed(2)}`,
     `Redondance : ${(m.networkRedundancy * 100).toFixed(1)}%`,
     `Lisibilité : ${(m.readabilityScore * 100).toFixed(0)}%`,
-  ];
-  for (const line of summaryLines) {
+  ]) {
     addText(`  • ${line}`, 9);
   }
 
-  // Mode breakdown
   y += 4;
   addText('Répartition par mode', 12, { bold: true });
   y += 2;
   const modeCounts = new Map<string, number>();
-  for (const r of analysis.routes) {
-    modeCounts.set(r.mode, (modeCounts.get(r.mode) || 0) + 1);
-  }
+  for (const r of analysis.routes) modeCounts.set(r.mode, (modeCounts.get(r.mode) || 0) + 1);
   for (const [mode, count] of modeCounts) {
     addText(`  • ${modeLabels[mode as keyof typeof modeLabels] || mode} : ${count} lignes`, 9);
   }
 
-  // --- Capture views ---
-  const captureElement = async (el: HTMLElement | null, label: string): Promise<HTMLCanvasElement | null> => {
-    if (!el) return null;
-    onProgress?.(`Capture ${label}...`);
-    return html2canvas(el, {
-      backgroundColor: '#ffffff',
-      scale: 2,
-      useCORS: true,
-      logging: false,
-    });
-  };
-
-  onProgress?.('Capture des diagrammes...');
-  const [densityCanvas, transitCanvas, frictionCanvas] = await Promise.all([
-    captureElement(densityRef, 'Densité circulaire'),
-    captureElement(transitRef, 'Correspondances'),
-    captureElement(frictionRef, 'Friction'),
-  ]);
-
-  const addCanvasPage = (canvas: HTMLCanvasElement | null, title: string) => {
-    if (!canvas) return;
+  const addImagePage = (dataUrl: string, title: string) => {
     pdf.addPage();
     y = margin;
     addText(title, 16, { bold: true });
     y += 4;
-
-    const imgData = canvas.toDataURL('image/png');
-    const ratio = canvas.height / canvas.width;
-    const imgW = contentW;
-    const imgH = imgW * ratio;
-
-    // If too tall, scale down
+    const img = new Image();
+    img.src = dataUrl;
     const maxH = 240;
-    const finalW = imgH > maxH ? (maxH / ratio) : imgW;
-    const finalH = imgH > maxH ? maxH : imgH;
-
-    pdf.addImage(imgData, 'PNG', margin, y, finalW, finalH);
+    const ratio = img.height / img.width || 0.75;
+    const finalW = Math.min(contentW, maxH / ratio);
+    const finalH = finalW * ratio;
+    pdf.addImage(dataUrl, 'PNG', margin, y, finalW, finalH);
     y += finalH + 4;
   };
 
-  addCanvasPage(densityCanvas, 'Vue 1 — Diagramme de densité circulaire');
-  addCanvasPage(transitCanvas, 'Vue 2 — Diagramme de correspondances');
-  addCanvasPage(frictionCanvas, 'Vue 3 — Analyse de friction');
+  const views: [HTMLElement | null | undefined, string, boolean][] = [
+    [densityRef, 'Vue 1 — Diagramme de densité circulaire', false],
+    [transitRef, 'Vue 2 — Diagramme de correspondances', false],
+    [frictionRef, 'Vue 3 — Analyse de friction', false],
+    [isochroneRef, 'Vue 4 — Carte isochrone', true],
+  ];
 
-  // --- Top friction stations page ---
+  for (const [el, title, hasLeaflet] of views) {
+    if (!el) continue;
+    onProgress?.(`Capture : ${title.split('—')[1]?.trim() ?? title}`);
+    const dataUrl = await captureElement(el, hasLeaflet);
+    if (dataUrl) addImagePage(dataUrl, title);
+  }
+
   pdf.addPage();
   y = margin;
   addText('Stations à forte friction', 14, { bold: true });
   y += 4;
-  const topStations = analysis.stationMetrics.slice(0, 20);
-  for (const s of topStations) {
+  for (const s of analysis.stationMetrics.slice(0, 20)) {
     ensureSpace(6);
-    addText(`${s.frictionIndex.toFixed(2)}  ${s.stopName} — ${s.routeCount} lignes, ${s.correspondences} corr.`, 8);
+    addText(
+      `${s.frictionIndex.toFixed(2)}  ${s.stopName} — ${s.routeCount} lignes, ${s.correspondences} corr.`,
+      8,
+    );
   }
 
-  // Top overloaded routes
   y += 6;
   ensureSpace(20);
   addText('Lignes surchargées', 14, { bold: true });
   y += 4;
-  const routeConnectionCount = new Map<string, number>();
+  const routeConns = new Map<string, number>();
   for (const c of analysis.correspondences) {
-    routeConnectionCount.set(c.routeA, (routeConnectionCount.get(c.routeA) || 0) + c.weight);
-    routeConnectionCount.set(c.routeB, (routeConnectionCount.get(c.routeB) || 0) + c.weight);
+    routeConns.set(c.routeA, (routeConns.get(c.routeA) || 0) + c.weight);
+    routeConns.set(c.routeB, (routeConns.get(c.routeB) || 0) + c.weight);
   }
   const topRoutes = analysis.routes
-    .map(r => ({ ...r, connections: routeConnectionCount.get(r.routeId) || 0 }))
+    .map(r => ({ ...r, connections: routeConns.get(r.routeId) || 0 }))
     .sort((a, b) => b.connections - a.connections)
     .slice(0, 15);
   for (const r of topRoutes) {
@@ -158,43 +205,32 @@ export async function exportPdfReport({
     addText(`${r.name} — ${r.connections} connexions, ${r.stopCount} arrêts`, 8);
   }
 
-  // --- Signage Recommendations page ---
   pdf.addPage();
   y = margin;
   addText('Recommandations signalétiques — Top 10 stations', 14, { bold: true });
   y += 2;
-  addText('Actions terrain basées sur l\'analyse de friction et de centralité', 9, { color: [120, 120, 120] });
+  addText("Actions terrain basées sur l'analyse de friction et de centralité", 9, {
+    color: [120, 120, 120],
+  });
   y += 6;
 
   const recommendations = generateSignageRecommendations(analysis);
   for (const rec of recommendations) {
     ensureSpace(30);
-    const levelLabel = rec.level === 'critical' ? '🔴 CRITIQUE' : rec.level === 'warning' ? '🟡 ATTENTION' : '🟢 STANDARD';
+    const levelLabel =
+      rec.level === 'critical' ? '! CRITIQUE' : rec.level === 'warning' ? '~ ATTENTION' : '- STANDARD';
     addText(`${levelLabel} — ${rec.station}`, 10, { bold: true });
-    addText(`  Friction: ${rec.friction.toFixed(2)} · ${rec.routeCount} lignes · ${rec.correspondences} correspondances`, 8, { color: [100, 100, 100] });
+    addText(
+      `  Friction: ${rec.friction.toFixed(2)} · ${rec.routeCount} lignes · ${rec.correspondences} correspondances`,
+      8,
+      { color: [100, 100, 100] },
+    );
     y += 1;
     for (const action of rec.actions) {
       ensureSpace(5);
-      addText(`    → ${action}`, 8);
+      addText(`    -> ${action}`, 8);
     }
     y += 3;
-  }
-
-  // Translation table
-  ensureSpace(50);
-  y += 4;
-  addText('Grille de lecture terrain', 12, { bold: true });
-  y += 2;
-  const gridLines = [
-    'Station friction > 3.0 → Renforcer signalétique directionnelle (panneaux, jalonnement, écrans)',
-    'Station avec beaucoup de correspondances → Ajouter plans de quartier, totems, personnel',
-    'Ligne structurante (beaucoup de correspondances) → Prévoir itinéraires de substitution fléchés',
-    'Station périphérique isolée → Info voyageur vers le hub le plus proche',
-    'Redondance réseau < 20% → Communiquer les itinéraires bis en cas de perturbation',
-  ];
-  for (const line of gridLines) {
-    ensureSpace(8);
-    addText(`  • ${line}`, 8);
   }
 
   onProgress?.('Finalisation...');

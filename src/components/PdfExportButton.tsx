@@ -10,9 +10,10 @@ interface Props {
   densityRef: React.RefObject<HTMLElement>;
   transitRef: React.RefObject<HTMLElement>;
   frictionRef: React.RefObject<HTMLElement>;
+  isochroneRef?: React.RefObject<HTMLElement>;
 }
 
-const PdfExportButton: React.FC<Props> = ({ analysis, fileName, densityRef, transitRef, frictionRef }) => {
+const PdfExportButton: React.FC<Props> = ({ analysis, fileName, densityRef, transitRef, frictionRef, isochroneRef }) => {
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState('');
 
@@ -25,6 +26,7 @@ const PdfExportButton: React.FC<Props> = ({ analysis, fileName, densityRef, tran
         densityRef: densityRef.current,
         transitRef: transitRef.current,
         frictionRef: frictionRef.current,
+        isochroneRef: isochroneRef?.current,
         onProgress: setProgress,
       });
       toast.success('Rapport PDF exporté');
