@@ -487,6 +487,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId
             centerStop={centerStop}
             selectedStopId={selectedStopId}
             onSelectStop={onSelectStop}
+            onSetCenter={setCenterId}
             stopPositions={stopPositions}
           />
         </div>
