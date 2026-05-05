@@ -43,22 +43,65 @@ function convexHull(pts: [number, number][]): [number, number][] {
   return [...lower, ...upper];
 }
 
-// Spatial grid sampling: keeps the most accessible stop (lowest travelTime) per cell.
-// Always preserves the selected stop even if it was displaced by a closer neighbour.
-function gridSample(
+// --- Stop tier classification based on accessibility rank ---
+type StopTier = 'hub' | 'secondary' | 'peripheral';
+
+const HUB_COUNT = 15;
+const SECONDARY_COUNT = 60;
+
+function classifyTiers(nodes: IsochroneNode[]): Map<string, StopTier> {
+  const sorted = [...nodes].sort((a, b) => a.travelTime - b.travelTime);
+  const tiers = new Map<string, StopTier>();
+  sorted.forEach((n, i) => {
+    if (i < HUB_COUNT) tiers.set(n.stopId, 'hub');
+    else if (i < HUB_COUNT + SECONDARY_COUNT) tiers.set(n.stopId, 'secondary');
+    else tiers.set(n.stopId, 'peripheral');
+  });
+  return tiers;
+}
+
+// --- LOD-aware stop filtering with spatial deduplication ---
+const LOD_HIGH = 14;
+const LOD_MID = 12;
+const CELL_MID = 0.008; // ~800m
+const CELL_LOW = 0.020; // ~2km
+const CAP_HIGH = 150;
+const CAP_MID = 75;
+const CAP_LOW = 15;
+
+function filterByLod(
   nodes: IsochroneNode[],
-  cellSize: number,
+  tiers: Map<string, StopTier>,
+  zoom: number,
   selectedStopId?: string | null,
 ): IsochroneNode[] {
-  const sorted = [...nodes].sort((a, b) => a.travelTime - b.travelTime);
-  const grid = new Map<string, IsochroneNode>();
+  const isHigh = zoom >= LOD_HIGH;
+  const isMid = zoom >= LOD_MID;
 
-  for (const node of sorted) {
-    const key = `${Math.floor(node.lat / cellSize)},${Math.floor(node.lon / cellSize)}`;
-    if (!grid.has(key)) grid.set(key, node);
+  const allowed: Set<StopTier> = isHigh
+    ? new Set(['hub', 'secondary', 'peripheral'])
+    : isMid
+      ? new Set(['hub', 'secondary'])
+      : new Set(['hub']);
+
+  const cap = isHigh ? CAP_HIGH : isMid ? CAP_MID : CAP_LOW;
+  const cellSize = isHigh ? 0 : isMid ? CELL_MID : CELL_LOW;
+
+  const eligible = [...nodes]
+    .filter(n => allowed.has(tiers.get(n.stopId) ?? 'peripheral'))
+    .sort((a, b) => a.travelTime - b.travelTime);
+
+  let result: IsochroneNode[];
+  if (cellSize > 0) {
+    const grid = new Map<string, IsochroneNode>();
+    for (const node of eligible) {
+      const key = `${Math.floor(node.lat / cellSize)},${Math.floor(node.lon / cellSize)}`;
+      if (!grid.has(key)) grid.set(key, node);
+    }
+    result = Array.from(grid.values()).slice(0, cap);
+  } else {
+    result = eligible.slice(0, cap);
   }
-
-  const result = Array.from(grid.values());
 
   if (selectedStopId && !result.some(n => n.stopId === selectedStopId)) {
     const sel = nodes.find(n => n.stopId === selectedStopId);
@@ -68,18 +111,21 @@ function gridSample(
   return result;
 }
 
-// Zoom thresholds for LOD levels
-const LOD_HIGH = 14;    // >= 14: show all stops
-const LOD_MID = 12;     // 12–13: medium density (~800m grid)
-// < 12: low density (~2km grid, hubs only)
+// --- Visual style per tier ---
+const TIER_RADIUS: Record<StopTier, number> = { hub: 8, secondary: 5, peripheral: 3 };
+const TIER_WEIGHT: Record<StopTier, number> = { hub: 2, secondary: 1, peripheral: 0.5 };
+const TIER_OPACITY: Record<StopTier, number> = { hub: 1, secondary: 0.85, peripheral: 0.7 };
 
-const CELL_MID = 0.008; // ~800m at mid latitudes
-const CELL_LOW = 0.020; // ~2km at mid latitudes
-
-function applyLod(nodes: IsochroneNode[], zoom: number, selectedStopId?: string | null): IsochroneNode[] {
-  if (zoom >= LOD_HIGH) return nodes;
-  if (zoom >= LOD_MID) return gridSample(nodes, CELL_MID, selectedStopId);
-  return gridSample(nodes, CELL_LOW, selectedStopId);
+// --- Per-band cumulative convex hulls for zone visualization ---
+// Builds zones from outermost band inward so inner layers render on top.
+function buildBandZones(nodes: IsochroneNode[]): { band: number; hull: [number, number][] }[] {
+  const bands = [...new Set(nodes.map(n => n.band))].sort((a, b) => b - a);
+  return bands
+    .map(band => ({
+      band,
+      hull: convexHull(nodes.filter(n => n.band <= band).map(n => [n.lat, n.lon])),
+    }))
+    .filter(z => z.hull.length >= 3);
 }
 
 function ZoomTracker({ onZoom }: { onZoom: (z: number) => void }) {
@@ -137,14 +183,15 @@ const IsochroneMap: React.FC<Props> = ({ nodes, centerStop, selectedStopId, onSe
   const [hoveredStopId, setHoveredStopId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(12);
 
-  const hull = convexHull(nodes.map(n => [n.lat, n.lon]));
   const defaultCenter: [number, number] = centerStop
     ? [centerStop.stop_lat, centerStop.stop_lon]
     : [43.6, 1.44];
 
+  const tiers = useMemo(() => classifyTiers(nodes), [nodes]);
+  const bandZones = useMemo(() => buildBandZones(nodes), [nodes]);
   const visibleNodes = useMemo(
-    () => applyLod(nodes, zoom, selectedStopId),
-    [nodes, zoom, selectedStopId],
+    () => filterByLod(nodes, tiers, zoom, selectedStopId),
+    [nodes, tiers, zoom, selectedStopId],
   );
 
   return (
@@ -158,27 +205,41 @@ const IsochroneMap: React.FC<Props> = ({ nodes, centerStop, selectedStopId, onSe
         <FitBounds nodes={nodes} centerStop={centerStop} />
         <FlyToSelected selectedStopId={selectedStopId} nodes={nodes} stopPositions={stopPositions} />
 
-        {hull.length >= 3 && (
-          <Polygon
-            positions={hull}
-            pathOptions={{ color: '#6366f1', fillColor: '#6366f1', fillOpacity: 0.07, weight: 1.5, dashArray: '6 4' }}
-          />
-        )}
+        {/* Isochrone time-band zones — outer to inner, each layer adds depth */}
+        {bandZones.map(({ band, hull }) => {
+          const color = bandColor(band);
+          return (
+            <Polygon
+              key={`zone-${band}`}
+              positions={hull}
+              pathOptions={{
+                color,
+                fillColor: color,
+                fillOpacity: 0.08,
+                weight: 1.5,
+                opacity: 0.45,
+              }}
+            />
+          );
+        })}
 
+        {/* Stop markers with 3-tier visual hierarchy */}
         {visibleNodes.map(node => {
           const isSelected = node.stopId === selectedStopId;
           const isHovered = node.stopId === hoveredStopId;
+          const tier = tiers.get(node.stopId) ?? 'peripheral';
           const base = bandColor(node.band);
+          const r = TIER_RADIUS[tier];
           return (
             <CircleMarker
               key={node.stopId}
               center={[node.lat, node.lon]}
-              radius={isSelected ? 9 : isHovered ? 7 : 5}
+              radius={isSelected ? r + 3 : isHovered ? r + 1 : r}
               pathOptions={{
-                color: isSelected ? '#ffffff' : base,
+                color: isSelected ? '#ffffff' : tier === 'hub' ? '#0f172a' : base,
                 fillColor: base,
-                fillOpacity: isSelected || isHovered ? 1 : 0.85,
-                weight: isSelected ? 3 : 1,
+                fillOpacity: isSelected || isHovered ? 1 : TIER_OPACITY[tier],
+                weight: isSelected ? 3 : TIER_WEIGHT[tier],
               }}
               eventHandlers={{
                 click: () => onSelectStop?.(node.stopId),
@@ -194,11 +255,12 @@ const IsochroneMap: React.FC<Props> = ({ nodes, centerStop, selectedStopId, onSe
           );
         })}
 
+        {/* Center stop — always prominent */}
         {centerStop && (
           <CircleMarker
             center={[centerStop.stop_lat, centerStop.stop_lon]}
-            radius={9}
-            pathOptions={{ color: '#fff', fillColor: '#1e293b', fillOpacity: 1, weight: 2.5 }}
+            radius={11}
+            pathOptions={{ color: '#fff', fillColor: '#0f172a', fillOpacity: 1, weight: 2.5 }}
           >
             <Tooltip permanent direction="top">{centerStop.stop_name}</Tooltip>
           </CircleMarker>
