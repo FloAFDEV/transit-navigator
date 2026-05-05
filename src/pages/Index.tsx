@@ -47,6 +47,7 @@ const Index: React.FC = () => {
     centerStop: null,
   });
   const [shareCopied, setShareCopied] = useState(false);
+  const [selectedStopId, setSelectedStopId] = useState<string | null>(null);
 
   const densityRef = useRef<HTMLDivElement>(null);
   const transitRef = useRef<HTMLDivElement>(null);
@@ -318,14 +319,25 @@ const Index: React.FC = () => {
             <TransitDiagram analysis={analysis} selectedRouteId={selectedRouteId} onSelectRoute={handleSelectRoute} />
           </div>
           <div ref={topologyRef} style={{ display: activeTab === 'topology' ? 'block' : 'none' }}>
-            <TopologicalView analysis={analysis} selectedRouteId={selectedRouteId} onSelectRoute={handleSelectRoute} />
+            <TopologicalView
+              analysis={analysis}
+              selectedRouteId={selectedRouteId}
+              onSelectRoute={handleSelectRoute}
+              selectedStopId={selectedStopId}
+              onSelectStop={setSelectedStopId}
+            />
           </div>
           <div ref={frictionRef} style={{ display: activeTab === 'friction' ? 'block' : 'none' }}>
             <FrictionAnalysis analysis={analysis} selectedRouteId={selectedRouteId} onSelectRoute={handleSelectRoute} />
           </div>
           <div ref={isochroneRef} style={{ display: activeTab === 'isochrone' ? 'block' : 'none' }}>
             {gtfsData && (
-              <IsochroneDiagram gtfs={gtfsData} onNodesChange={handleIsochroneChange} />
+              <IsochroneDiagram
+                gtfs={gtfsData}
+                onNodesChange={handleIsochroneChange}
+                selectedStopId={selectedStopId}
+                onSelectStop={setSelectedStopId}
+              />
             )}
             {!gtfsData && isochroneSnapshot.nodes.length > 0 && (
               <div className="flex flex-col items-center gap-4 pt-4">

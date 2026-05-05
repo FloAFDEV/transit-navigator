@@ -12,12 +12,19 @@ interface Props {
   analysis: AnalysisResult;
   selectedRouteId: string | null;
   onSelectRoute: (routeId: string | null) => void;
+  selectedStopId?: string | null;
+  onSelectStop?: (id: string) => void;
 }
 
-const TopologicalView: React.FC<Props> = ({ analysis, selectedRouteId, onSelectRoute }) => {
+const TopologicalView: React.FC<Props> = ({ analysis, selectedRouteId, onSelectRoute, selectedStopId, onSelectStop }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
+  const selectedStopIdRef = useRef(selectedStopId);
+  const onSelectStopRef = useRef(onSelectStop);
+
+  useEffect(() => { selectedStopIdRef.current = selectedStopId; }, [selectedStopId]);
+  useEffect(() => { onSelectStopRef.current = onSelectStop; }, [onSelectStop]);
   const size = 700;
 
   // Build station nodes and route edges
@@ -105,13 +112,16 @@ const TopologicalView: React.FC<Props> = ({ analysis, selectedRouteId, onSelectR
       .data(stationNodes)
       .enter().append('circle')
       .attr('class', 'station')
+      .attr('data-stop-id', (d: any) => d.id)
       .attr('r', (d: any) => radiusScale(d.routeCount))
       .attr('fill', (d: any) => colorScale(d.friction))
       .attr('stroke', 'hsl(0, 0%, 100%)')
       .attr('stroke-width', 1.5)
       .attr('cursor', 'pointer')
+      .on('click', (_event: any, d: any) => onSelectStopRef.current?.(d.id))
       .on('mouseenter', function (event, d: any) {
-        d3.select(this).attr('stroke-width', 3).attr('stroke', 'hsl(220, 20%, 20%)');
+        const isSel = d3.select(this).attr('data-stop-id') === selectedStopIdRef.current;
+        d3.select(this).attr('stroke-width', 3).attr('stroke', isSel ? '#6366f1' : 'hsl(220, 20%, 20%)');
         if (tooltipRef.current) {
           tooltipRef.current.style.opacity = '1';
           tooltipRef.current.style.left = `${event.offsetX + 14}px`;
@@ -124,7 +134,10 @@ const TopologicalView: React.FC<Props> = ({ analysis, selectedRouteId, onSelectR
         }
       })
       .on('mouseleave', function () {
-        d3.select(this).attr('stroke-width', 1.5).attr('stroke', 'hsl(0, 0%, 100%)');
+        const isSel = d3.select(this).attr('data-stop-id') === selectedStopIdRef.current;
+        d3.select(this)
+          .attr('stroke-width', isSel ? 3 : 1.5)
+          .attr('stroke', isSel ? '#6366f1' : 'hsl(0, 0%, 100%)');
         if (tooltipRef.current) tooltipRef.current.style.opacity = '0';
       });
 
@@ -171,6 +184,16 @@ const TopologicalView: React.FC<Props> = ({ analysis, selectedRouteId, onSelectR
 
     return () => { simulation.stop(); svg.on('.zoom', null); };
   }, [stationNodes, routeEdges, size]);
+
+  useEffect(() => {
+    if (!svgRef.current) return;
+    d3.select(svgRef.current).selectAll<SVGCircleElement, unknown>('.station').each(function () {
+      const el = d3.select(this);
+      const isSel = el.attr('data-stop-id') === selectedStopId;
+      el.attr('stroke', isSel ? '#6366f1' : 'hsl(0, 0%, 100%)')
+        .attr('stroke-width', isSel ? 3 : 1.5);
+    });
+  }, [selectedStopId, stationNodes]);
 
   const resetZoom = useCallback(() => {
     if (svgRef.current && zoomRef.current)

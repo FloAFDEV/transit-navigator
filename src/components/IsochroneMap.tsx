@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Polygon, Tooltip, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { IsochroneNode } from '@/lib/isochrone';
@@ -12,16 +12,12 @@ interface CenterStop {
 interface Props {
   nodes: IsochroneNode[];
   centerStop: CenterStop | null;
+  selectedStopId?: string | null;
+  onSelectStop?: (id: string) => void;
+  stopPositions?: Map<string, [number, number]>;
 }
 
-const BAND_COLORS = [
-  '#22c55e',
-  '#84cc16',
-  '#eab308',
-  '#f97316',
-  '#ef4444',
-  '#a855f7',
-];
+const BAND_COLORS = ['#22c55e', '#84cc16', '#eab308', '#f97316', '#ef4444', '#a855f7'];
 
 function bandColor(band: number): string {
   return BAND_COLORS[Math.max(0, Math.min(Math.floor(band / 5) - 1, BAND_COLORS.length - 1))];
@@ -64,7 +60,35 @@ function FitBounds({ nodes, centerStop }: { nodes: IsochroneNode[]; centerStop: 
   return null;
 }
 
-const IsochroneMap: React.FC<Props> = ({ nodes, centerStop }) => {
+function FlyToSelected({
+  selectedStopId,
+  nodes,
+  stopPositions,
+}: {
+  selectedStopId?: string | null;
+  nodes: IsochroneNode[];
+  stopPositions?: Map<string, [number, number]>;
+}) {
+  const map = useMap();
+  const prevId = useRef<string | null | undefined>(null);
+
+  useEffect(() => {
+    if (!selectedStopId || selectedStopId === prevId.current) return;
+    prevId.current = selectedStopId;
+    const node = nodes.find(n => n.stopId === selectedStopId);
+    if (node) {
+      map.flyTo([node.lat, node.lon], Math.max(map.getZoom(), 14), { duration: 0.7 });
+      return;
+    }
+    const pos = stopPositions?.get(selectedStopId);
+    if (pos) map.flyTo(pos, Math.max(map.getZoom(), 14), { duration: 0.7 });
+  }, [selectedStopId, nodes, stopPositions, map]);
+
+  return null;
+}
+
+const IsochroneMap: React.FC<Props> = ({ nodes, centerStop, selectedStopId, onSelectStop, stopPositions }) => {
+  const [hoveredStopId, setHoveredStopId] = useState<string | null>(null);
   const hull = convexHull(nodes.map(n => [n.lat, n.lon]));
   const defaultCenter: [number, number] = centerStop
     ? [centerStop.stop_lat, centerStop.stop_lon]
@@ -78,25 +102,44 @@ const IsochroneMap: React.FC<Props> = ({ nodes, centerStop }) => {
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
         <FitBounds nodes={nodes} centerStop={centerStop} />
+        <FlyToSelected selectedStopId={selectedStopId} nodes={nodes} stopPositions={stopPositions} />
+
         {hull.length >= 3 && (
           <Polygon
             positions={hull}
             pathOptions={{ color: '#6366f1', fillColor: '#6366f1', fillOpacity: 0.07, weight: 1.5, dashArray: '6 4' }}
           />
         )}
-        {nodes.map(node => (
-          <CircleMarker
-            key={node.stopId}
-            center={[node.lat, node.lon]}
-            radius={5}
-            pathOptions={{ color: bandColor(node.band), fillColor: bandColor(node.band), fillOpacity: 0.85, weight: 1 }}
-          >
-            <Tooltip>
-              <strong>{node.stopName}</strong><br />
-              {Math.floor(node.travelTime / 60)} min{node.travelTime % 60 > 0 ? ` ${node.travelTime % 60}s` : ''}
-            </Tooltip>
-          </CircleMarker>
-        ))}
+
+        {nodes.map(node => {
+          const isSelected = node.stopId === selectedStopId;
+          const isHovered = node.stopId === hoveredStopId;
+          const base = bandColor(node.band);
+          return (
+            <CircleMarker
+              key={node.stopId}
+              center={[node.lat, node.lon]}
+              radius={isSelected ? 9 : isHovered ? 7 : 5}
+              pathOptions={{
+                color: isSelected ? '#ffffff' : base,
+                fillColor: base,
+                fillOpacity: isSelected || isHovered ? 1 : 0.85,
+                weight: isSelected ? 3 : 1,
+              }}
+              eventHandlers={{
+                click: () => onSelectStop?.(node.stopId),
+                mouseover: () => setHoveredStopId(node.stopId),
+                mouseout: () => setHoveredStopId(null),
+              }}
+            >
+              <Tooltip>
+                <strong>{node.stopName}</strong><br />
+                {Math.floor(node.travelTime / 60)} min{node.travelTime % 60 > 0 ? ` ${node.travelTime % 60}s` : ''}
+              </Tooltip>
+            </CircleMarker>
+          );
+        })}
+
         {centerStop && (
           <CircleMarker
             center={[centerStop.stop_lat, centerStop.stop_lon]}
