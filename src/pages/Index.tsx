@@ -212,13 +212,13 @@ const Index: React.FC = () => {
     );
   }
 
-  const tabs: { key: ViewTab; label: string }[] = [
-    { key: 'density',      label: 'Densité circulaire' },
-    { key: 'transit',      label: 'Correspondances' },
-    { key: 'topology',     label: 'Topologie' },
-    { key: 'friction',     label: 'Analyse friction' },
-    { key: 'isochrone',    label: 'Isochrones' },
-    { key: 'dependencies', label: 'Graphe de dépendances' },
+  const tabs: { key: ViewTab; label: string; desc: string }[] = [
+    { key: 'density',      label: 'Densité des lignes',     desc: 'Répartition des lignes par heure et par mode de transport' },
+    { key: 'transit',      label: 'Correspondances',        desc: 'Stations où plusieurs lignes se croisent et s\'interconnectent' },
+    { key: 'topology',     label: 'Topologie du réseau',    desc: 'Structure géographique et hiérarchie des connexions' },
+    { key: 'friction',     label: 'Points de congestion',   desc: 'Stations complexes à forte charge — potentiels goulets d\'étranglement' },
+    { key: 'isochrone',    label: 'Accessibilité en temps', desc: 'Depuis un arrêt, quelles zones peut-on atteindre en X minutes ?' },
+    { key: 'dependencies', label: 'Analyse stratégique',    desc: 'Hubs critiques, stations fragiles et opportunités de développement' },
   ];
 
   const modes: (TransportMode | 'all')[] = ['all', 'bus', 'metro', 'tram', 'train', 'cable'];
@@ -312,6 +312,7 @@ const Index: React.FC = () => {
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
+            title={tab.desc}
             className={`py-3 text-sm font-medium transition-colors ${
               activeTab === tab.key ? 'tab-active' : 'tab-inactive'
             }`}
@@ -320,6 +321,15 @@ const Index: React.FC = () => {
           </button>
         ))}
       </nav>
+
+      {/* Context banner for active tab */}
+      {tabs.find(t => t.key === activeTab) && (
+        <div className="px-6 py-2 bg-secondary/30 border-b border-border text-xs text-muted-foreground flex items-center gap-2">
+          <span className="text-primary font-medium">{tabs.find(t => t.key === activeTab)!.label}</span>
+          <span>·</span>
+          <span>{tabs.find(t => t.key === activeTab)!.desc}</span>
+        </div>
+      )}
 
       <div className="flex">
         <main className="flex-1 p-6 min-w-0">

@@ -199,9 +199,13 @@ function FlyToSelected({
     if (!selectedStopId || selectedStopId === prevId.current) return;
     prevId.current = selectedStopId;
     const node = nodes.find(n => n.stopId === selectedStopId);
-    if (node) { map.flyTo([node.lat, node.lon], Math.max(map.getZoom(), 14), { duration: 0.6 }); return; }
+    if (node && isFinite(node.lat) && isFinite(node.lon) && (node.lat !== 0 || node.lon !== 0)) {
+      map.flyTo([node.lat, node.lon], Math.max(map.getZoom(), 14), { duration: 0.6 }); return;
+    }
     const pos = stopPositions?.get(selectedStopId);
-    if (pos) map.flyTo(pos, Math.max(map.getZoom(), 14), { duration: 0.6 });
+    if (pos && isFinite(pos[0]) && isFinite(pos[1]) && (pos[0] !== 0 || pos[1] !== 0)) {
+      map.flyTo(pos, Math.max(map.getZoom(), 14), { duration: 0.6 });
+    }
   }, [selectedStopId, nodes, stopPositions, map]);
 
   return null;
