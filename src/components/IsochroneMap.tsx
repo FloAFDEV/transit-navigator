@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Polygon, Tooltip, useMap, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, CircleMarker, Tooltip, LayerGroup, useMap, useMapEvents } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { IsochroneNode } from '@/lib/isochrone';
+import type { GtfsStop } from '@/lib/gtfs-types';
 
 interface CenterStop {
   stop_lat: number;
@@ -11,157 +12,90 @@ interface CenterStop {
 
 interface Props {
   nodes: IsochroneNode[];
+  allStops?: GtfsStop[];
   centerStop: CenterStop | null;
   selectedStopId?: string | null;
   onSelectStop?: (id: string) => void;
-  /** Shift the isochrone origin to this stop and recompute. */
   onSetCenter?: (stopId: string) => void;
   stopPositions?: Map<string, [number, number]>;
 }
 
-// ─── Colours ─────────────────────────────────────────────────────────────────
-
-const BAND_COLORS = ['#22c55e', '#84cc16', '#eab308', '#f97316', '#ef4444', '#a855f7'];
-
-function bandColor(band: number): string {
-  return BAND_COLORS[Math.max(0, Math.min(Math.floor(band / 5) - 1, BAND_COLORS.length - 1))];
-}
-
-// ─── Geometry ─────────────────────────────────────────────────────────────────
-
-function convexHull(pts: [number, number][]): [number, number][] {
-  if (pts.length < 3) return pts;
-  const sorted = [...pts].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  const cross = (o: [number, number], a: [number, number], b: [number, number]) =>
-    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-  const lower: [number, number][] = [];
-  for (const p of sorted) {
-    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
-    lower.push(p);
-  }
-  const upper: [number, number][] = [];
-  for (const p of [...sorted].reverse()) {
-    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
-    upper.push(p);
-  }
-  lower.pop();
-  upper.pop();
-  return [...lower, ...upper];
-}
-
-function dpSimplify(pts: [number, number][], tol: number): [number, number][] {
-  if (tol <= 0 || pts.length <= 2) return pts;
-  const [x1, y1] = pts[0];
-  const [x2, y2] = pts[pts.length - 1];
-  const lineLen = Math.hypot(x2 - x1, y2 - y1);
-  let maxDist = 0;
-  let maxIdx = 0;
-  for (let i = 1; i < pts.length - 1; i++) {
-    const [x, y] = pts[i];
-    const dist = lineLen === 0
-      ? Math.hypot(x - x1, y - y1)
-      : Math.abs((y2 - y1) * x - (x2 - x1) * y + x2 * y1 - y2 * x1) / lineLen;
-    if (dist > maxDist) { maxDist = dist; maxIdx = i; }
-  }
-  if (maxDist <= tol) return [pts[0], pts[pts.length - 1]];
-  const l = dpSimplify(pts.slice(0, maxIdx + 1), tol);
-  const r = dpSimplify(pts.slice(maxIdx), tol);
-  return [...l.slice(0, -1), ...r];
-}
-
-/** One cumulative convex hull per time band, outer → inner order. */
-function buildBandZones(nodes: IsochroneNode[]): { band: number; hull: [number, number][] }[] {
-  const bands = [...new Set(nodes.map(n => n.band))].sort((a, b) => b - a);
-  return bands
-    .map(band => ({
-      band,
-      hull: convexHull(nodes.filter(n => n.band <= band).map(n => [n.lat, n.lon])),
-    }))
-    .filter(z => z.hull.length >= 3);
-}
-
-// ─── Contour LOD (stroke only — zero fill) ────────────────────────────────────
+// ─── Time-bucket visual encoding ──────────────────────────────────────────────
 //
-// Dashed contour lines mark time boundaries without obscuring the base map.
-// minBandMult controls how many ring levels are visible at each zoom:
-//   = 30 → 1 contour  (outermost boundary only)
-//   = 15 → 2 contours (15 + 30 min rings)
-//   = 10 → 3 contours (10 + 20 + 30 min)
-//   =  5 → all rings
-//
-// Contours fade (lower opacity, thinner dash) as zoom increases
-// because stop markers become the dominant reading layer.
+// Mandatory strong differentiation: every bucket has a unique combination of
+// color + radius + opacity. Closer = larger, brighter, more opaque.
+// Radius values are BASE values — they are multiplied by zoomScale() before rendering.
 
-interface ContourLod {
-  minBandMult: number;
+interface BucketStyle {
+  color: string;
+  baseRadius: number;
+  fillOpacity: number;
   weight: number;
-  opacity: number;
-  dashArray: string;
-  dpTol: number;
 }
 
-const CONTOUR_LOD_TABLE: [number, ContourLod][] = [
-  [ 9, { minBandMult: 30, weight: 1.8, opacity: 0.70, dashArray: '6 4', dpTol: 0.006 }],
-  [11, { minBandMult: 15, weight: 1.6, opacity: 0.58, dashArray: '5 4', dpTol: 0.003 }],
-  [13, { minBandMult: 10, weight: 1.5, opacity: 0.48, dashArray: '4 3', dpTol: 0.001 }],
-  [15, { minBandMult:  5, weight: 1.3, opacity: 0.36, dashArray: '3 3', dpTol: 0     }],
-  [99, { minBandMult:  5, weight: 1.0, opacity: 0.22, dashArray: '3 3', dpTol: 0     }],
-];
+const BUCKET_STYLES: Record<number, BucketStyle> = {
+   5: { color: '#16a34a', baseRadius: 7, fillOpacity: 1.00, weight: 1.8 }, // green  — 0–5 min
+  10: { color: '#65a30d', baseRadius: 6, fillOpacity: 0.88, weight: 1.4 }, // lime   — 5–10
+  15: { color: '#d97706', baseRadius: 5, fillOpacity: 0.74, weight: 1.1 }, // amber  — 10–15
+  20: { color: '#ea580c', baseRadius: 4, fillOpacity: 0.60, weight: 0.9 }, // orange — 15–20
+  25: { color: '#dc2626', baseRadius: 3, fillOpacity: 0.46, weight: 0.7 }, // red    — 20–25
+  99: { color: '#7c3aed', baseRadius: 3, fillOpacity: 0.32, weight: 0.5 }, // violet — 25+
+};
 
-function getContourLod(zoom: number): ContourLod {
-  for (const [thresh, lod] of CONTOUR_LOD_TABLE) {
-    if (zoom < thresh) return lod;
-  }
-  return CONTOUR_LOD_TABLE[CONTOUR_LOD_TABLE.length - 1][1];
+function bucketStyle(band: number): BucketStyle {
+  if (band <=  5) return BUCKET_STYLES[5];
+  if (band <= 10) return BUCKET_STYLES[10];
+  if (band <= 15) return BUCKET_STYLES[15];
+  if (band <= 20) return BUCKET_STYLES[20];
+  if (band <= 25) return BUCKET_STYLES[25];
+  return BUCKET_STYLES[99];
 }
 
-// ─── Stop marker visual encoding ─────────────────────────────────────────────
+// ─── Zoom → radius scaling (INVERSE relationship) ─────────────────────────────
 //
-// Stops ARE the primary information layer.
-// Visual weight is inversely proportional to travel time:
-//   inner stops (5 min) → large, fully opaque, thick border
-//   outer stops (30 min) → small, semi-transparent, hairline border
+// Low zoom (overview) → larger dots visible at a glance.
+// High zoom (street) → small dots that don't overlap, making time slices readable.
 //
-// This produces a natural "heat" gradient without any polygon fill.
+// Curve is intentionally steep above z12 so zooming reveals structure instead
+// of creating a blob. Base radii are kept small (3–7px) so even at z9 the
+// largest stop is only ~11px — enough to read, not enough to obscure neighbours.
+//
+//   z  9 → ×1.55  |  z 12 → ×0.85  |  z 15 → ×0.32
+//   z 10 → ×1.28  |  z 13 → ×0.62  |  z 16 → ×0.22
+//   z 11 → ×1.05  |  z 14 → ×0.45  |
 
-function markerScale(zoom: number): number {
-  if (zoom < 11) return 0.65;
-  if (zoom < 13) return 0.82;
-  if (zoom < 15) return 1.0;
-  return 1.2;
+function zoomScale(zoom: number): number {
+  if (zoom <=  9) return 1.55;
+  if (zoom <= 10) return 1.28;
+  if (zoom <= 11) return 1.05;
+  if (zoom <= 12) return 0.85;
+  if (zoom <= 13) return 0.62;
+  if (zoom <= 14) return 0.45;
+  if (zoom <= 15) return 0.32;
+  return 0.22;
 }
 
-function stopVisual(band: number, maxBand: number, scale: number) {
-  // t ∈ [0,1]: 0 = innermost (most accessible), 1 = outermost
-  const t = Math.max(0, Math.min(1, (band - 5) / Math.max(maxBand - 5, 1)));
-  return {
-    radius:      Math.max(2, Math.round((9 - t * 6) * scale)), // 9 → 3
-    fillOpacity: 1.0 - t * 0.45,                               // 1.0 → 0.55
-    weight:      2.0 - t * 1.5,                                // 2.0 → 0.5
-  };
+function scaledRadius(base: number, zoom: number): number {
+  return Math.max(2, Math.round(base * zoomScale(zoom)));
 }
 
-// ─── Stop LOD filtering ───────────────────────────────────────────────────────
+// ─── Reachable LOD ────────────────────────────────────────────────────────────
 //
-// No tier classification needed: accessibility rank drives visual weight directly.
-// Spatial deduplication keeps the most accessible stop per grid cell so the
-// map stays readable at low zoom without hiding important hubs.
+// Spatial grid deduplication keeps the most accessible stop per cell.
+// The selected stop is always preserved regardless of LOD cap.
 
-const LOD_CAPS  = { low: 25, mid: 100, high: 300 } as const;
-const LOD_CELLS = { low: 0.018, mid: 0.006, high: 0 } as const; // degrees
+const REACH_CAPS  = { low: 50, mid: 180, high: 600 } as const;
+const REACH_CELLS = { low: 0.018, mid: 0.006, high: 0 } as const;
 
-function filterStops(
+function filterReachable(
   nodes: IsochroneNode[],
   zoom: number,
   selectedStopId?: string | null,
 ): IsochroneNode[] {
-  const level = zoom >= 14 ? 'high' : zoom >= 12 ? 'mid' : 'low';
-  const cap      = LOD_CAPS[level];
-  const cellSize = LOD_CELLS[level];
-
-  // Sort by travelTime asc so the most accessible stop wins each spatial cell
-  // and therefore gets the largest marker at any given zoom.
-  const sorted = [...nodes].sort((a, b) => a.travelTime - b.travelTime);
+  const level    = zoom >= 14 ? 'high' : zoom >= 12 ? 'mid' : 'low';
+  const cap      = REACH_CAPS[level];
+  const cellSize = REACH_CELLS[level];
+  const sorted   = [...nodes].sort((a, b) => a.travelTime - b.travelTime);
 
   let result: IsochroneNode[];
   if (cellSize > 0) {
@@ -181,6 +115,46 @@ function filterStops(
   }
 
   return result;
+}
+
+// ─── Unreachable (background) network sampling ────────────────────────────────
+//
+// ⚠️  These stops must ALWAYS be visible — they are the "poor zone" signal.
+// Holes in this layer reveal areas with no transit at all.
+// The contrast between muted-grey unreachable and colored reachable IS the map story.
+//
+// They are clickable: any network stop can become a new isochrone origin.
+// Sampling adjusts density per zoom — never hides the layer completely.
+
+const BG_CELLS = { low: 0.025, mid: 0.010, high: 0 } as const;
+const BG_CAPS  = { low: 220, mid: 380, high: 700 } as const;
+
+function sampleBackground(
+  allStops: GtfsStop[],
+  reachableIds: Set<string>,
+  centerId: string | null,
+  zoom: number,
+): GtfsStop[] {
+  const level    = zoom >= 14 ? 'high' : zoom >= 11 ? 'mid' : 'low';
+  const cellSize = BG_CELLS[level];
+  const cap      = BG_CAPS[level];
+
+  let candidates = allStops.filter(
+    s => !reachableIds.has(s.stop_id) &&
+         s.stop_id !== centerId &&
+         !(s.stop_lat === 0 && s.stop_lon === 0),
+  );
+
+  if (cellSize > 0) {
+    const grid = new Map<string, GtfsStop>();
+    for (const s of candidates) {
+      const key = `${Math.floor(s.stop_lat / cellSize)},${Math.floor(s.stop_lon / cellSize)}`;
+      if (!grid.has(key)) grid.set(key, s);
+    }
+    candidates = Array.from(grid.values());
+  }
+
+  return candidates.slice(0, cap);
 }
 
 // ─── Map utilities ────────────────────────────────────────────────────────────
@@ -225,21 +199,29 @@ function FlyToSelected({
     if (!selectedStopId || selectedStopId === prevId.current) return;
     prevId.current = selectedStopId;
     const node = nodes.find(n => n.stopId === selectedStopId);
-    if (node) {
-      map.flyTo([node.lat, node.lon], Math.max(map.getZoom(), 14), { duration: 0.7 });
-      return;
-    }
+    if (node) { map.flyTo([node.lat, node.lon], Math.max(map.getZoom(), 14), { duration: 0.6 }); return; }
     const pos = stopPositions?.get(selectedStopId);
-    if (pos) map.flyTo(pos, Math.max(map.getZoom(), 14), { duration: 0.7 });
+    if (pos) map.flyTo(pos, Math.max(map.getZoom(), 14), { duration: 0.6 });
   }, [selectedStopId, nodes, stopPositions, map]);
 
   return null;
 }
 
+// ─── Legend ───────────────────────────────────────────────────────────────────
+
+const LEGEND_ITEMS: { label: string; key: number }[] = [
+  { label: '0–5 min',   key:  5 },
+  { label: '5–10 min',  key: 10 },
+  { label: '10–15 min', key: 15 },
+  { label: '15–20 min', key: 20 },
+  { label: '20–25 min', key: 25 },
+  { label: '25+ min',   key: 99 },
+];
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const IsochroneMap: React.FC<Props> = ({
-  nodes, centerStop, selectedStopId, onSelectStop, onSetCenter, stopPositions,
+  nodes, allStops, centerStop, selectedStopId, onSelectStop, onSetCenter, stopPositions,
 }) => {
   const [hoveredStopId, setHoveredStopId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(12);
@@ -248,27 +230,34 @@ const IsochroneMap: React.FC<Props> = ({
     ? [centerStop.stop_lat, centerStop.stop_lon]
     : [43.6, 1.44];
 
-  // ── Computed once per node dataset, never on zoom ─────────────────────────
-  const maxBand   = useMemo(() => Math.max(...nodes.map(n => n.band), 5), [nodes]);
-  const bandZones = useMemo(() => buildBandZones(nodes), [nodes]);
+  // Derive centerId from centerStop for background exclusion.
+  // We match by coordinates since we only have CenterStop (no id on this type).
+  const centerId = useMemo(() => {
+    if (!centerStop || !allStops) return null;
+    return allStops.find(
+      s => s.stop_lat === centerStop.stop_lat && s.stop_lon === centerStop.stop_lon,
+    )?.stop_id ?? null;
+  }, [centerStop, allStops]);
 
-  // ── Cheap zoom-reactive derivations ──────────────────────────────────────
-  const contourLod   = useMemo(() => getContourLod(zoom), [zoom]);
-  const scale        = useMemo(() => markerScale(zoom), [zoom]);
-  const visibleNodes = useMemo(() => filterStops(nodes, zoom, selectedStopId), [nodes, zoom, selectedStopId]);
+  const reachableIds = useMemo(() => new Set(nodes.map(n => n.stopId)), [nodes]);
 
-  /**
-   * Contour polygons: band-filtered + DP-simplified on the pre-built hulls.
-   * Fallback to outermost band so at least one contour is always visible.
-   */
-  const visibleContours = useMemo(() => {
-    const filtered = bandZones.filter(z => z.band % contourLod.minBandMult === 0);
-    const toRender = filtered.length > 0 ? filtered : bandZones.slice(0, 1);
-    return toRender.map(z => ({ band: z.band, pts: dpSimplify(z.hull, contourLod.dpTol) }));
-  }, [bandZones, contourLod]);
+  // Layer 1: unreachable network stops — always present, always clickable.
+  const backgroundStops = useMemo(
+    () => (allStops ? sampleBackground(allStops, reachableIds, centerId, zoom) : []),
+    [allStops, reachableIds, centerId, zoom],
+  );
+
+  // Layer 2: reachable stops, LOD-filtered per zoom.
+  const visibleReachable = useMemo(
+    () => filterReachable(nodes, zoom, selectedStopId),
+    [nodes, zoom, selectedStopId],
+  );
+
+  const scale = zoomScale(zoom);
+  const hasIsochrone = nodes.length > 0;
 
   return (
-    <div style={{ height: 450, borderRadius: 12, overflow: 'hidden', boxShadow: '0 2px 16px rgba(0,0,0,0.13)' }}>
+    <div style={{ position: 'relative', height: 480, borderRadius: 12, overflow: 'hidden', boxShadow: '0 2px 20px rgba(0,0,0,0.16)' }}>
       <MapContainer center={defaultCenter} zoom={12} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
@@ -279,73 +268,164 @@ const IsochroneMap: React.FC<Props> = ({
         <FlyToSelected selectedStopId={selectedStopId} nodes={nodes} stopPositions={stopPositions} />
 
         {/*
-          Time-band contours — stroke only, no fill.
-          Mark the accessibility boundary for each time threshold without
-          hiding map features or stop markers underneath.
+          ── LAYER 1 : réseau complet (unreachable) ─────────────────────────────
+          Toujours visible à tous les niveaux de zoom.
+          Les trous dans cette couche = zones sans transit = signal "zone pauvre".
+          Chaque point est cliquable → recentre l'isochrone sur cet arrêt.
         */}
-        {visibleContours.map(({ band, pts }) => (
-          <Polygon
-            key={`contour-${band}`}
-            positions={pts}
-            pathOptions={{
-              color:      bandColor(band),
-              fillOpacity: 0,
-              weight:     contourLod.weight,
-              opacity:    contourLod.opacity,
-              dashArray:  contourLod.dashArray,
-            }}
-          />
-        ))}
+        <LayerGroup>
+          {backgroundStops.map(s => {
+            const isHov = s.stop_id === hoveredStopId;
+            return (
+              <CircleMarker
+                key={`bg-${s.stop_id}`}
+                center={[s.stop_lat, s.stop_lon]}
+                radius={isHov ? Math.max(2, Math.round(3.5 * scale)) : Math.max(1, Math.round(2.5 * scale))}
+                pathOptions={{
+                  color:       isHov ? '#94a3b8' : 'transparent',
+                  fillColor:   '#94a3b8',
+                  fillOpacity: isHov ? 0.55 : (hasIsochrone ? 0.22 : 0.38),
+                  weight:      isHov ? 1 : 0,
+                }}
+                eventHandlers={{
+                  click:     () => { onSetCenter?.(s.stop_id); onSelectStop?.(s.stop_id); },
+                  mouseover: () => setHoveredStopId(s.stop_id),
+                  mouseout:  () => setHoveredStopId(null),
+                }}
+              >
+                <Tooltip>
+                  <strong>{s.stop_name}</strong><br />
+                  <span style={{ fontSize: 10, opacity: 0.7 }}>↩ Recentrer depuis ici</span>
+                </Tooltip>
+              </CircleMarker>
+            );
+          })}
+        </LayerGroup>
 
         {/*
-          Stop markers — PRIMARY information layer.
-          Encoding: color = time band, size + opacity = proximity (inner = large + opaque).
-          Click = recompute isochrone from this stop as new origin.
+          ── LAYER 2 : arrêts accessibles (reachable) ──────────────────────────
+          Rendu par tranche de temps avec différenciation forte :
+          couleur + taille + opacité varient strictement par bucket.
+          Zoom-inverse scaling : grands points à vue d'ensemble, fins au zoom fort.
         */}
-        {visibleNodes.map(node => {
-          const isSelected = node.stopId === selectedStopId;
-          const isHovered  = node.stopId === hoveredStopId;
-          const color = bandColor(node.band);
-          const vis   = stopVisual(node.band, maxBand, scale);
-          const mins  = Math.floor(node.travelTime / 60);
-          const secs  = node.travelTime % 60;
-          return (
-            <CircleMarker
-              key={node.stopId}
-              center={[node.lat, node.lon]}
-              radius={isSelected ? vis.radius + 3 : isHovered ? vis.radius + 1 : vis.radius}
-              pathOptions={{
-                color:       isSelected ? '#ffffff' : color,
-                fillColor:   color,
-                fillOpacity: isSelected || isHovered ? 1 : vis.fillOpacity,
-                weight:      isSelected ? 3 : vis.weight,
-              }}
-              eventHandlers={{
-                click:     () => { onSelectStop?.(node.stopId); onSetCenter?.(node.stopId); },
-                mouseover: () => setHoveredStopId(node.stopId),
-                mouseout:  () => setHoveredStopId(null),
-              }}
-            >
-              <Tooltip>
-                <strong>{node.stopName}</strong><br />
-                {mins} min{secs > 0 ? ` ${secs}s` : ''}<br />
-                <span style={{ fontSize: 10, opacity: 0.6 }}>↩ Recentrer depuis ici</span>
-              </Tooltip>
-            </CircleMarker>
-          );
-        })}
+        <LayerGroup>
+          {visibleReachable.map(node => {
+            const isSelected = node.stopId === selectedStopId;
+            const isHovered  = node.stopId === hoveredStopId;
+            const bs         = bucketStyle(node.band);
+            const r          = scaledRadius(bs.baseRadius, zoom);
+            const mins       = Math.floor(node.travelTime / 60);
+            const secs       = node.travelTime % 60;
+            return (
+              <CircleMarker
+                key={node.stopId}
+                center={[node.lat, node.lon]}
+                radius={isHovered ? r + 2 : r}
+                pathOptions={{
+                  color:       isSelected ? '#ffffff' : bs.color,
+                  fillColor:   bs.color,
+                  fillOpacity: isSelected || isHovered ? 1 : bs.fillOpacity,
+                  weight:      isSelected ? 2.5 : bs.weight,
+                }}
+                eventHandlers={{
+                  click:     () => { onSelectStop?.(node.stopId); onSetCenter?.(node.stopId); },
+                  mouseover: () => setHoveredStopId(node.stopId),
+                  mouseout:  () => setHoveredStopId(null),
+                }}
+              >
+                <Tooltip>
+                  <strong>{node.stopName}</strong><br />
+                  {mins} min{secs > 0 ? ` ${secs}s` : ''}<br />
+                  <span style={{ fontSize: 10, opacity: 0.6 }}>↩ Recentrer depuis ici</span>
+                </Tooltip>
+              </CircleMarker>
+            );
+          })}
+        </LayerGroup>
 
-        {/* Origin stop — visually distinct from all other stops */}
-        {centerStop && (
-          <CircleMarker
-            center={[centerStop.stop_lat, centerStop.stop_lon]}
-            radius={Math.round(12 * Math.min(scale, 1))}
-            pathOptions={{ color: '#fff', fillColor: '#0f172a', fillOpacity: 1, weight: 2.5 }}
-          >
-            <Tooltip permanent direction="top">{centerStop.stop_name}</Tooltip>
-          </CircleMarker>
-        )}
+        {/*
+          ── LAYER 3 : origine sélectionnée (priorité maximale) ────────────────
+          Double cercle : anneau extérieur (glow) + disque intérieur (focus).
+          Le glow signale visuellement le point de décision actuel.
+          Rendu en dernier = z-index le plus élevé dans le SVG Leaflet.
+        */}
+        <LayerGroup>
+          {centerStop && (
+            <>
+              {/* Glow ring — scales down with zoom to stay proportional */}
+              <CircleMarker
+                center={[centerStop.stop_lat, centerStop.stop_lon]}
+                radius={Math.max(8, Math.round(14 * scale))}
+                pathOptions={{
+                  color:       '#0f172a',
+                  fillColor:   '#0f172a',
+                  fillOpacity: 0.12,
+                  weight:      1.5,
+                  opacity:     0.30,
+                  dashArray:   '3 2',
+                }}
+                interactive={false}
+              />
+              {/* Origin dot */}
+              <CircleMarker
+                center={[centerStop.stop_lat, centerStop.stop_lon]}
+                radius={Math.max(5, Math.round(8 * scale))}
+                pathOptions={{ color: '#ffffff', fillColor: '#0f172a', fillOpacity: 1, weight: 2.5 }}
+              >
+                <Tooltip permanent direction="top" offset={[0, -6]}>
+                  <strong>{centerStop.stop_name}</strong>
+                </Tooltip>
+              </CircleMarker>
+            </>
+          )}
+        </LayerGroup>
       </MapContainer>
+
+      {/* ── Légende des tranches de temps ─────────────────────────────────── */}
+      {hasIsochrone && (
+        <div style={{
+          position: 'absolute', bottom: 28, right: 10, zIndex: 1000,
+          background: 'rgba(15,23,42,0.85)', backdropFilter: 'blur(6px)',
+          borderRadius: 8, padding: '8px 12px',
+          display: 'flex', flexDirection: 'column', gap: 5,
+          boxShadow: '0 2px 12px rgba(0,0,0,0.3)',
+        }}>
+          <div style={{ fontSize: 9, color: '#94a3b8', fontFamily: 'monospace', letterSpacing: 1, marginBottom: 2, textTransform: 'uppercase' }}>
+            Accessibilité
+          </div>
+          {LEGEND_ITEMS.map(({ label, key }) => {
+            const s = BUCKET_STYLES[key];
+            return (
+              <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{
+                  display: 'inline-block',
+                  width: Math.round(s.baseRadius * 1.4),
+                  height: Math.round(s.baseRadius * 1.4),
+                  borderRadius: '50%',
+                  background: s.color,
+                  opacity: s.fillOpacity,
+                  flexShrink: 0,
+                }} />
+                <span style={{ fontSize: 10, color: '#e2e8f0', fontFamily: 'monospace' }}>{label}</span>
+              </div>
+            );
+          })}
+          <div style={{ borderTop: '1px solid rgba(148,163,184,0.2)', marginTop: 3, paddingTop: 5, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#94a3b8', opacity: 0.4, flexShrink: 0 }} />
+            <span style={{ fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>Hors portée</span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Indicateur de zoom ─────────────────────────────────────────────── */}
+      <div style={{
+        position: 'absolute', bottom: 28, left: 10, zIndex: 1000,
+        background: 'rgba(15,23,42,0.75)', backdropFilter: 'blur(4px)',
+        borderRadius: 6, padding: '4px 8px',
+        fontSize: 9, color: '#64748b', fontFamily: 'monospace',
+      }}>
+        zoom {zoom} · ×{zoomScale(zoom).toFixed(2)}
+      </div>
     </div>
   );
 };

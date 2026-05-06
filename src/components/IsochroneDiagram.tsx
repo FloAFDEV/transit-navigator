@@ -484,6 +484,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId
         <div className="w-full max-w-3xl">
           <IsochroneMap
             nodes={nodes}
+            allStops={gtfs.stops}
             centerStop={centerStop}
             selectedStopId={selectedStopId}
             onSelectStop={onSelectStop}
