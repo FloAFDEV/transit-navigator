@@ -4,6 +4,7 @@ import CircularDensityDiagram from '@/components/CircularDensityDiagram';
 import TransitDiagram from '@/components/TransitDiagram';
 import FrictionAnalysis from '@/components/FrictionAnalysis';
 import TopologicalView from '@/components/TopologicalView';
+import NetworkDependencyView from '@/components/NetworkDependencyView';
 import IsochroneDiagram from '@/components/IsochroneDiagram';
 import NetworkNarrative from '@/components/NetworkNarrative';
 import SignageGuide from '@/components/SignageGuide';
@@ -25,7 +26,7 @@ import { toast } from 'sonner';
 import { Share2, Image, Monitor } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-type ViewTab = 'density' | 'transit' | 'topology' | 'friction' | 'isochrone';
+type ViewTab = 'density' | 'transit' | 'topology' | 'friction' | 'isochrone' | 'dependencies';
 
 interface IsochroneSnapshot {
   nodes: IsochroneNode[];
@@ -86,7 +87,7 @@ const Index: React.FC = () => {
     const tab = params.get('tab') as ViewTab | null;
     const mode = params.get('mode') as TransportMode | 'all' | null;
     const route = params.get('route');
-    if (tab && ['density', 'transit', 'topology', 'friction', 'isochrone'].includes(tab)) setActiveTab(tab);
+    if (tab && ['density', 'transit', 'topology', 'friction', 'isochrone', 'dependencies'].includes(tab)) setActiveTab(tab);
     if (mode && mode !== 'present') setFilterMode(mode as TransportMode | 'all');
     if (route) setSelectedRouteId(route);
   }, []);
@@ -173,7 +174,7 @@ const Index: React.FC = () => {
   }, [analysis, gtfsData, fileName, isochroneSnapshot]);
 
   const handleExportPng = useCallback(() => {
-    const refMap: Record<ViewTab, React.RefObject<HTMLDivElement>> = {
+    const refMap: Partial<Record<ViewTab, React.RefObject<HTMLDivElement>>> = {
       density: densityRef,
       transit: transitRef,
       topology: topologyRef,
@@ -212,11 +213,12 @@ const Index: React.FC = () => {
   }
 
   const tabs: { key: ViewTab; label: string }[] = [
-    { key: 'density', label: 'Densité circulaire' },
-    { key: 'transit', label: 'Correspondances' },
-    { key: 'topology', label: 'Topologie' },
-    { key: 'friction', label: 'Analyse friction' },
-    { key: 'isochrone', label: 'Isochrones' },
+    { key: 'density',      label: 'Densité circulaire' },
+    { key: 'transit',      label: 'Correspondances' },
+    { key: 'topology',     label: 'Topologie' },
+    { key: 'friction',     label: 'Analyse friction' },
+    { key: 'isochrone',    label: 'Isochrones' },
+    { key: 'dependencies', label: 'Graphe de dépendances' },
   ];
 
   const modes: (TransportMode | 'all')[] = ['all', 'bus', 'metro', 'tram', 'train', 'cable'];
@@ -358,6 +360,15 @@ const Index: React.FC = () => {
           <div ref={frictionRef} style={{ display: activeTab === 'friction' ? 'block' : 'none' }}>
             <FrictionAnalysis analysis={analysis} selectedRouteId={selectedRouteId} onSelectRoute={handleSelectRoute} />
           </div>
+          {activeTab === 'dependencies' && gtfsData && (
+            <NetworkDependencyView
+              analysis={analysis}
+              gtfs={gtfsData}
+              selectedStopId={selectedStopId}
+              onSelectStop={setSelectedStopId}
+            />
+          )}
+
           <div ref={isochroneRef} style={{ display: activeTab === 'isochrone' ? 'block' : 'none' }}>
             {gtfsData && (
               <IsochroneDiagram
