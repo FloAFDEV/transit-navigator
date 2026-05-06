@@ -34,12 +34,12 @@ interface BucketStyle {
 }
 
 const BUCKET_STYLES: Record<number, BucketStyle> = {
-   5: { color: '#16a34a', baseRadius: 12, fillOpacity: 1.00, weight: 2.0 }, // green  — 0–5 min
-  10: { color: '#65a30d', baseRadius:  9, fillOpacity: 0.88, weight: 1.6 }, // lime   — 5–10
-  15: { color: '#d97706', baseRadius:  7, fillOpacity: 0.74, weight: 1.3 }, // amber  — 10–15
-  20: { color: '#ea580c', baseRadius:  6, fillOpacity: 0.60, weight: 1.0 }, // orange — 15–20
-  25: { color: '#dc2626', baseRadius:  5, fillOpacity: 0.46, weight: 0.8 }, // red    — 20–25
-  99: { color: '#7c3aed', baseRadius:  4, fillOpacity: 0.32, weight: 0.6 }, // violet — 25+
+   5: { color: '#16a34a', baseRadius: 7, fillOpacity: 1.00, weight: 1.8 }, // green  — 0–5 min
+  10: { color: '#65a30d', baseRadius: 6, fillOpacity: 0.88, weight: 1.4 }, // lime   — 5–10
+  15: { color: '#d97706', baseRadius: 5, fillOpacity: 0.74, weight: 1.1 }, // amber  — 10–15
+  20: { color: '#ea580c', baseRadius: 4, fillOpacity: 0.60, weight: 0.9 }, // orange — 15–20
+  25: { color: '#dc2626', baseRadius: 3, fillOpacity: 0.46, weight: 0.7 }, // red    — 20–25
+  99: { color: '#7c3aed', baseRadius: 3, fillOpacity: 0.32, weight: 0.5 }, // violet — 25+
 };
 
 function bucketStyle(band: number): BucketStyle {
@@ -53,22 +53,26 @@ function bucketStyle(band: number): BucketStyle {
 
 // ─── Zoom → radius scaling (INVERSE relationship) ─────────────────────────────
 //
-// Lower zoom (city overview) → larger dots → zones readable at a glance.
-// Higher zoom (street detail) → smaller dots → precision without overplotting.
+// Low zoom (overview) → larger dots visible at a glance.
+// High zoom (street) → small dots that don't overlap, making time slices readable.
 //
-//   z  9 → ×1.70  |  z 12 → ×1.05  |  z 15 → ×0.58
-//   z 10 → ×1.45  |  z 13 → ×0.85  |  z 16 → ×0.45
-//   z 11 → ×1.24  |  z 14 → ×0.70  |
+// Curve is intentionally steep above z12 so zooming reveals structure instead
+// of creating a blob. Base radii are kept small (3–7px) so even at z9 the
+// largest stop is only ~11px — enough to read, not enough to obscure neighbours.
+//
+//   z  9 → ×1.55  |  z 12 → ×0.85  |  z 15 → ×0.32
+//   z 10 → ×1.28  |  z 13 → ×0.62  |  z 16 → ×0.22
+//   z 11 → ×1.05  |  z 14 → ×0.45  |
 
 function zoomScale(zoom: number): number {
-  if (zoom <=  9) return 1.70;
-  if (zoom <= 10) return 1.45;
-  if (zoom <= 11) return 1.24;
-  if (zoom <= 12) return 1.05;
-  if (zoom <= 13) return 0.85;
-  if (zoom <= 14) return 0.70;
-  if (zoom <= 15) return 0.58;
-  return 0.45;
+  if (zoom <=  9) return 1.55;
+  if (zoom <= 10) return 1.28;
+  if (zoom <= 11) return 1.05;
+  if (zoom <= 12) return 0.85;
+  if (zoom <= 13) return 0.62;
+  if (zoom <= 14) return 0.45;
+  if (zoom <= 15) return 0.32;
+  return 0.22;
 }
 
 function scaledRadius(base: number, zoom: number): number {
@@ -348,16 +352,16 @@ const IsochroneMap: React.FC<Props> = ({
         <LayerGroup>
           {centerStop && (
             <>
-              {/* Glow ring */}
+              {/* Glow ring — scales down with zoom to stay proportional */}
               <CircleMarker
                 center={[centerStop.stop_lat, centerStop.stop_lon]}
-                radius={Math.max(12, Math.round(20 * scale))}
+                radius={Math.max(8, Math.round(14 * scale))}
                 pathOptions={{
                   color:       '#0f172a',
                   fillColor:   '#0f172a',
-                  fillOpacity: 0.15,
-                  weight:      2,
-                  opacity:     0.35,
+                  fillOpacity: 0.12,
+                  weight:      1.5,
+                  opacity:     0.30,
                   dashArray:   '3 2',
                 }}
                 interactive={false}
@@ -365,7 +369,7 @@ const IsochroneMap: React.FC<Props> = ({
               {/* Origin dot */}
               <CircleMarker
                 center={[centerStop.stop_lat, centerStop.stop_lon]}
-                radius={Math.max(8, Math.round(12 * scale))}
+                radius={Math.max(5, Math.round(8 * scale))}
                 pathOptions={{ color: '#ffffff', fillColor: '#0f172a', fillOpacity: 1, weight: 2.5 }}
               >
                 <Tooltip permanent direction="top" offset={[0, -6]}>
