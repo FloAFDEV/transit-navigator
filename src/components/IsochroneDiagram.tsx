@@ -181,11 +181,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId
         .attr('stroke-width', 1.5)
         .attr('stroke-dasharray', '6,3')
         .attr('opacity', 0.5);
-      content.append('text')
-        .attr('x', cx + r + 3).attr('y', cy - 4)
-        .attr('fill', BAND_COLORS[i % BAND_COLORS.length])
-        .attr('font-size', '10px').attr('font-family', 'monospace')
-        .text(`${m} min`);
+      // Labels rendered last (after dots) — see below
     });
 
     const centerLat = centerStop.stop_lat;
@@ -216,6 +212,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId
       }
       if (points.length < 2) continue;
       content.append('path')
+        .attr('class', 'route-path')
         .attr('d', line(points)!)
         .attr('fill', 'none').attr('stroke', rl.color)
         .attr('stroke-width', 2.5).attr('stroke-opacity', 0.7)
@@ -223,7 +220,8 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId
     }
 
     const n = nodes.length;
-    const dotRadius = Math.max(3, Math.min(5, 200 / Math.sqrt(n)));
+    // Smaller base radius — zoom handler applies inverse scaling on top
+    const dotRadius = Math.max(1.8, Math.min(3.5, 120 / Math.sqrt(n)));
     dotRadiusRef.current = dotRadius;
 
     nodes.forEach((node) => {
@@ -269,6 +267,28 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId
         });
     });
 
+    // Band labels rendered AFTER dots so they sit on top and stay readable
+    bands.forEach((m, i) => {
+      const r = rScale(m * 60);
+      const lx = cx + r + 3;
+      const ly = cy - 4;
+      const txt = `${m} min`;
+      // White knockout background
+      content.append('rect')
+        .attr('x', lx - 1).attr('y', ly - 9)
+        .attr('width', txt.length * 6.2 + 4).attr('height', 12)
+        .attr('rx', 2)
+        .attr('fill', 'hsl(var(--background))').attr('fill-opacity', 0.75)
+        .attr('pointer-events', 'none');
+      content.append('text')
+        .attr('class', 'band-label')
+        .attr('x', lx).attr('y', ly)
+        .attr('fill', BAND_COLORS[i % BAND_COLORS.length])
+        .attr('font-size', '10px').attr('font-family', 'monospace')
+        .attr('pointer-events', 'none')
+        .text(txt);
+    });
+
     content.append('circle')
       .attr('cx', cx).attr('cy', cy).attr('r', 6)
       .attr('fill', 'hsl(var(--foreground))').attr('stroke', 'hsl(var(--background))').attr('stroke-width', 2);
@@ -290,9 +310,24 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId
         .attr('font-size', '10px').attr('font-weight', '500').text(label);
     });
 
+    const baseDotRadius = dotRadius;
+
     const zoom = d3.zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.5, 6])
-      .on('zoom', (event) => content.attr('transform', event.transform.toString()));
+      .scaleExtent([0.5, 8])
+      .on('zoom', (event) => {
+        const { k } = event.transform;
+        content.attr('transform', event.transform.toString());
+
+        // Inverse dot scaling: screen radius = baseDotRadius / k^0.7
+        // In content-space: contentR = screenR / k = baseDotRadius / k^1.7
+        const r = Math.max(0.6, baseDotRadius / Math.pow(k, 1.7));
+        content.selectAll<SVGCircleElement, unknown>('.stop-dot').attr('r', r);
+        dotRadiusRef.current = r;
+
+        // Route lines stay visually thin (screen stroke-width ≈ 2px)
+        content.selectAll('.route-path')
+          .attr('stroke-width', Math.max(0.4, 2.5 / k));
+      });
     svg.call(zoom);
     zoomRef.current = zoom;
 
