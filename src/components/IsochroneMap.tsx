@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Polygon, Tooltip, useMap, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, CircleMarker, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { IsochroneNode } from '@/lib/isochrone';
+import type { GtfsStop } from '@/lib/gtfs-types';
 
 interface CenterStop {
   stop_lat: number;
@@ -11,15 +12,15 @@ interface CenterStop {
 
 interface Props {
   nodes: IsochroneNode[];
+  allStops?: GtfsStop[];
   centerStop: CenterStop | null;
   selectedStopId?: string | null;
   onSelectStop?: (id: string) => void;
-  /** Shift the isochrone origin to this stop and recompute. */
   onSetCenter?: (stopId: string) => void;
   stopPositions?: Map<string, [number, number]>;
 }
 
-// ─── Colours ─────────────────────────────────────────────────────────────────
+// ─── Colours ──────────────────────────────────────────────────────────────────
 
 const BAND_COLORS = ['#22c55e', '#84cc16', '#eab308', '#f97316', '#ef4444', '#a855f7'];
 
@@ -27,140 +28,86 @@ function bandColor(band: number): string {
   return BAND_COLORS[Math.max(0, Math.min(Math.floor(band / 5) - 1, BAND_COLORS.length - 1))];
 }
 
-// ─── Geometry ─────────────────────────────────────────────────────────────────
-
-function convexHull(pts: [number, number][]): [number, number][] {
-  if (pts.length < 3) return pts;
-  const sorted = [...pts].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  const cross = (o: [number, number], a: [number, number], b: [number, number]) =>
-    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-  const lower: [number, number][] = [];
-  for (const p of sorted) {
-    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
-    lower.push(p);
-  }
-  const upper: [number, number][] = [];
-  for (const p of [...sorted].reverse()) {
-    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
-    upper.push(p);
-  }
-  lower.pop();
-  upper.pop();
-  return [...lower, ...upper];
-}
-
-function dpSimplify(pts: [number, number][], tol: number): [number, number][] {
-  if (tol <= 0 || pts.length <= 2) return pts;
-  const [x1, y1] = pts[0];
-  const [x2, y2] = pts[pts.length - 1];
-  const lineLen = Math.hypot(x2 - x1, y2 - y1);
-  let maxDist = 0;
-  let maxIdx = 0;
-  for (let i = 1; i < pts.length - 1; i++) {
-    const [x, y] = pts[i];
-    const dist = lineLen === 0
-      ? Math.hypot(x - x1, y - y1)
-      : Math.abs((y2 - y1) * x - (x2 - x1) * y + x2 * y1 - y2 * x1) / lineLen;
-    if (dist > maxDist) { maxDist = dist; maxIdx = i; }
-  }
-  if (maxDist <= tol) return [pts[0], pts[pts.length - 1]];
-  const l = dpSimplify(pts.slice(0, maxIdx + 1), tol);
-  const r = dpSimplify(pts.slice(maxIdx), tol);
-  return [...l.slice(0, -1), ...r];
-}
-
-/** One cumulative convex hull per time band, outer → inner order. */
-function buildBandZones(nodes: IsochroneNode[]): { band: number; hull: [number, number][] }[] {
-  const bands = [...new Set(nodes.map(n => n.band))].sort((a, b) => b - a);
-  return bands
-    .map(band => ({
-      band,
-      hull: convexHull(nodes.filter(n => n.band <= band).map(n => [n.lat, n.lon])),
-    }))
-    .filter(z => z.hull.length >= 3);
-}
-
-// ─── Contour LOD (stroke only — zero fill) ────────────────────────────────────
+// ─── Visual encoding (FIXED radii — no zoom scaling) ─────────────────────────
 //
-// Dashed contour lines mark time boundaries without obscuring the base map.
-// minBandMult controls how many ring levels are visible at each zoom:
-//   = 30 → 1 contour  (outermost boundary only)
-//   = 15 → 2 contours (15 + 30 min rings)
-//   = 10 → 3 contours (10 + 20 + 30 min)
-//   =  5 → all rings
+// Three exclusive visual states, strongly differentiated:
+//   unreachable  → radius 2,  slate,  low opacity  (background context layer)
+//   reachable    → radius 4–7, band color, high opacity  (primary info layer)
+//   selected     → radius 10, dark fill / white border   (origin, always on top)
 //
-// Contours fade (lower opacity, thinner dash) as zoom increases
-// because stop markers become the dominant reading layer.
+// Reachable style is keyed to isochrone band only — never to zoom.
 
-interface ContourLod {
-  minBandMult: number;
+interface BandStyle {
+  radius: number;
+  fillOpacity: number;
   weight: number;
-  opacity: number;
-  dashArray: string;
-  dpTol: number;
 }
 
-const CONTOUR_LOD_TABLE: [number, ContourLod][] = [
-  [ 9, { minBandMult: 30, weight: 1.8, opacity: 0.70, dashArray: '6 4', dpTol: 0.006 }],
-  [11, { minBandMult: 15, weight: 1.6, opacity: 0.58, dashArray: '5 4', dpTol: 0.003 }],
-  [13, { minBandMult: 10, weight: 1.5, opacity: 0.48, dashArray: '4 3', dpTol: 0.001 }],
-  [15, { minBandMult:  5, weight: 1.3, opacity: 0.36, dashArray: '3 3', dpTol: 0     }],
-  [99, { minBandMult:  5, weight: 1.0, opacity: 0.22, dashArray: '3 3', dpTol: 0     }],
+const BAND_STYLE_TABLE: [number, BandStyle][] = [
+  [ 5, { radius: 7, fillOpacity: 1.00, weight: 1.5 }],
+  [10, { radius: 6, fillOpacity: 0.88, weight: 1.2 }],
+  [15, { radius: 5, fillOpacity: 0.78, weight: 1.0 }],
+  [20, { radius: 5, fillOpacity: 0.65, weight: 0.8 }],
+  [25, { radius: 4, fillOpacity: 0.55, weight: 0.6 }],
+  [99, { radius: 4, fillOpacity: 0.45, weight: 0.5 }],
 ];
 
-function getContourLod(zoom: number): ContourLod {
-  for (const [thresh, lod] of CONTOUR_LOD_TABLE) {
-    if (zoom < thresh) return lod;
+function bandStyle(band: number): BandStyle {
+  for (const [thresh, style] of BAND_STYLE_TABLE) {
+    if (band <= thresh) return style;
   }
-  return CONTOUR_LOD_TABLE[CONTOUR_LOD_TABLE.length - 1][1];
+  return BAND_STYLE_TABLE[BAND_STYLE_TABLE.length - 1][1];
 }
 
-// ─── Stop marker visual encoding ─────────────────────────────────────────────
+// ─── Background stop sampling ─────────────────────────────────────────────────
 //
-// Stops ARE the primary information layer.
-// Visual weight is inversely proportional to travel time:
-//   inner stops (5 min) → large, fully opaque, thick border
-//   outer stops (30 min) → small, semi-transparent, hairline border
-//
-// This produces a natural "heat" gradient without any polygon fill.
+// At low zoom the full allStops set would paint a solid mass of dots.
+// Spatial grid deduplication keeps at most one stop per cell, capped at 400.
 
-function markerScale(zoom: number): number {
-  if (zoom < 11) return 0.65;
-  if (zoom < 13) return 0.82;
-  if (zoom < 15) return 1.0;
-  return 1.2;
+const BG_CELL_LOW = 0.025; // ~2.5 km grid at zoom < 11
+const BG_CELL_MID = 0.008; // ~0.8 km grid at zoom 11–13
+const BG_CAP      = 400;
+
+function sampleBackground(
+  allStops: GtfsStop[],
+  reachableIds: Set<string>,
+  zoom: number,
+): GtfsStop[] {
+  const cellSize = zoom < 11 ? BG_CELL_LOW : zoom < 14 ? BG_CELL_MID : 0;
+
+  let candidates = allStops.filter(
+    s => !reachableIds.has(s.stop_id) && !(s.stop_lat === 0 && s.stop_lon === 0),
+  );
+
+  if (cellSize > 0) {
+    const grid = new Map<string, GtfsStop>();
+    for (const s of candidates) {
+      const key = `${Math.floor(s.stop_lat / cellSize)},${Math.floor(s.stop_lon / cellSize)}`;
+      if (!grid.has(key)) grid.set(key, s);
+    }
+    candidates = Array.from(grid.values());
+  }
+
+  return candidates.slice(0, BG_CAP);
 }
 
-function stopVisual(band: number, maxBand: number, scale: number) {
-  // t ∈ [0,1]: 0 = innermost (most accessible), 1 = outermost
-  const t = Math.max(0, Math.min(1, (band - 5) / Math.max(maxBand - 5, 1)));
-  return {
-    radius:      Math.max(2, Math.round((9 - t * 6) * scale)), // 9 → 3
-    fillOpacity: 1.0 - t * 0.45,                               // 1.0 → 0.55
-    weight:      2.0 - t * 1.5,                                // 2.0 → 0.5
-  };
-}
-
-// ─── Stop LOD filtering ───────────────────────────────────────────────────────
+// ─── Reachable stop LOD filtering ────────────────────────────────────────────
 //
-// No tier classification needed: accessibility rank drives visual weight directly.
-// Spatial deduplication keeps the most accessible stop per grid cell so the
-// map stays readable at low zoom without hiding important hubs.
+// Shows the most accessible stop per spatial cell at low/mid zoom,
+// always preserving the selected stop.
 
-const LOD_CAPS  = { low: 25, mid: 100, high: 300 } as const;
-const LOD_CELLS = { low: 0.018, mid: 0.006, high: 0 } as const; // degrees
+const LOD_CAPS  = { low: 30, mid: 120, high: 400 } as const;
+const LOD_CELLS = { low: 0.018, mid: 0.006, high: 0 } as const;
 
-function filterStops(
+function filterReachable(
   nodes: IsochroneNode[],
   zoom: number,
   selectedStopId?: string | null,
 ): IsochroneNode[] {
-  const level = zoom >= 14 ? 'high' : zoom >= 12 ? 'mid' : 'low';
+  const level    = zoom >= 14 ? 'high' : zoom >= 12 ? 'mid' : 'low';
   const cap      = LOD_CAPS[level];
   const cellSize = LOD_CELLS[level];
 
-  // Sort by travelTime asc so the most accessible stop wins each spatial cell
-  // and therefore gets the largest marker at any given zoom.
   const sorted = [...nodes].sort((a, b) => a.travelTime - b.travelTime);
 
   let result: IsochroneNode[];
@@ -239,7 +186,7 @@ function FlyToSelected({
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const IsochroneMap: React.FC<Props> = ({
-  nodes, centerStop, selectedStopId, onSelectStop, onSetCenter, stopPositions,
+  nodes, allStops, centerStop, selectedStopId, onSelectStop, onSetCenter, stopPositions,
 }) => {
   const [hoveredStopId, setHoveredStopId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(12);
@@ -248,24 +195,25 @@ const IsochroneMap: React.FC<Props> = ({
     ? [centerStop.stop_lat, centerStop.stop_lon]
     : [43.6, 1.44];
 
-  // ── Computed once per node dataset, never on zoom ─────────────────────────
-  const maxBand   = useMemo(() => Math.max(...nodes.map(n => n.band), 5), [nodes]);
-  const bandZones = useMemo(() => buildBandZones(nodes), [nodes]);
+  const hasIsochrone = nodes.length > 0;
 
-  // ── Cheap zoom-reactive derivations ──────────────────────────────────────
-  const contourLod   = useMemo(() => getContourLod(zoom), [zoom]);
-  const scale        = useMemo(() => markerScale(zoom), [zoom]);
-  const visibleNodes = useMemo(() => filterStops(nodes, zoom, selectedStopId), [nodes, zoom, selectedStopId]);
+  // Set of reachable stop IDs — excludes them from the background layer.
+  const reachableIds = useMemo(
+    () => new Set(nodes.map(n => n.stopId)),
+    [nodes],
+  );
 
-  /**
-   * Contour polygons: band-filtered + DP-simplified on the pre-built hulls.
-   * Fallback to outermost band so at least one contour is always visible.
-   */
-  const visibleContours = useMemo(() => {
-    const filtered = bandZones.filter(z => z.band % contourLod.minBandMult === 0);
-    const toRender = filtered.length > 0 ? filtered : bandZones.slice(0, 1);
-    return toRender.map(z => ({ band: z.band, pts: dpSimplify(z.hull, contourLod.dpTol) }));
-  }, [bandZones, contourLod]);
+  // Layer 1 — background (unreachable stops). Zoom-reactive sampling only.
+  const backgroundStops = useMemo(
+    () => (allStops ? sampleBackground(allStops, reachableIds, zoom) : []),
+    [allStops, reachableIds, zoom],
+  );
+
+  // Layer 2 — reachable stops. Zoom-reactive LOD only.
+  const visibleReachable = useMemo(
+    () => filterReachable(nodes, zoom, selectedStopId),
+    [nodes, zoom, selectedStopId],
+  );
 
   return (
     <div style={{ height: 450, borderRadius: 12, overflow: 'hidden', boxShadow: '0 2px 16px rgba(0,0,0,0.13)' }}>
@@ -279,46 +227,47 @@ const IsochroneMap: React.FC<Props> = ({
         <FlyToSelected selectedStopId={selectedStopId} nodes={nodes} stopPositions={stopPositions} />
 
         {/*
-          Time-band contours — stroke only, no fill.
-          Mark the accessibility boundary for each time threshold without
-          hiding map features or stop markers underneath.
+          LAYER 1 — Unreachable stops (background context).
+          Muted slate dots drawn first so every other layer renders on top.
+          Opacity is lower when an isochrone is active to keep focus on reachable stops.
         */}
-        {visibleContours.map(({ band, pts }) => (
-          <Polygon
-            key={`contour-${band}`}
-            positions={pts}
+        {backgroundStops.map(s => (
+          <CircleMarker
+            key={`bg-${s.stop_id}`}
+            center={[s.stop_lat, s.stop_lon]}
+            radius={2}
             pathOptions={{
-              color:      bandColor(band),
-              fillOpacity: 0,
-              weight:     contourLod.weight,
-              opacity:    contourLod.opacity,
-              dashArray:  contourLod.dashArray,
+              color:       '#64748b',
+              fillColor:   '#94a3b8',
+              fillOpacity: hasIsochrone ? 0.20 : 0.40,
+              weight:      0,
             }}
           />
         ))}
 
         {/*
-          Stop markers — PRIMARY information layer.
-          Encoding: color = time band, size + opacity = proximity (inner = large + opaque).
-          Click = recompute isochrone from this stop as new origin.
+          LAYER 2 — Reachable stops (primary information layer).
+          Color = time band. Size + opacity = proximity (inner = large + opaque).
+          Fixed radii — no zoom scaling — so visual weight is purely data-driven.
+          Click recenters the isochrone on this stop.
         */}
-        {visibleNodes.map(node => {
+        {visibleReachable.map(node => {
           const isSelected = node.stopId === selectedStopId;
           const isHovered  = node.stopId === hoveredStopId;
           const color = bandColor(node.band);
-          const vis   = stopVisual(node.band, maxBand, scale);
+          const style = bandStyle(node.band);
           const mins  = Math.floor(node.travelTime / 60);
           const secs  = node.travelTime % 60;
           return (
             <CircleMarker
               key={node.stopId}
               center={[node.lat, node.lon]}
-              radius={isSelected ? vis.radius + 3 : isHovered ? vis.radius + 1 : vis.radius}
+              radius={isSelected ? style.radius + 3 : isHovered ? style.radius + 1 : style.radius}
               pathOptions={{
                 color:       isSelected ? '#ffffff' : color,
                 fillColor:   color,
-                fillOpacity: isSelected || isHovered ? 1 : vis.fillOpacity,
-                weight:      isSelected ? 3 : vis.weight,
+                fillOpacity: isSelected || isHovered ? 1 : style.fillOpacity,
+                weight:      isSelected ? 2.5 : style.weight,
               }}
               eventHandlers={{
                 click:     () => { onSelectStop?.(node.stopId); onSetCenter?.(node.stopId); },
@@ -335,12 +284,15 @@ const IsochroneMap: React.FC<Props> = ({
           );
         })}
 
-        {/* Origin stop — visually distinct from all other stops */}
+        {/*
+          LAYER 3 — Origin stop (isochrone center).
+          Rendered last (topmost z-order). Fixed radius 10, strongly distinct style.
+        */}
         {centerStop && (
           <CircleMarker
             center={[centerStop.stop_lat, centerStop.stop_lon]}
-            radius={Math.round(12 * Math.min(scale, 1))}
-            pathOptions={{ color: '#fff', fillColor: '#0f172a', fillOpacity: 1, weight: 2.5 }}
+            radius={10}
+            pathOptions={{ color: '#ffffff', fillColor: '#0f172a', fillOpacity: 1, weight: 2.5 }}
           >
             <Tooltip permanent direction="top">{centerStop.stop_name}</Tooltip>
           </CircleMarker>
