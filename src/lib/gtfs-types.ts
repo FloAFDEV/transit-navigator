@@ -159,6 +159,34 @@ export interface InterStationEdge {
   tripCount: number;       // number of trips using this pair
   isBidirectional: boolean;
   source: 'stop_times' | 'transfer' | 'geographic';
+  routeIds: string[];      // dominant route_ids on this edge (for transfer detection)
+}
+
+// --- Network connectivity types ---
+
+export type IsolationCause =
+  | 'no_stop_times_link'
+  | 'single_route_branch'
+  | 'geo_isolation'
+  | 'missing_transfers'
+  | 'parent_station_mismatch';
+
+export interface IsolatedSubgraph {
+  componentId: number;
+  size: number;
+  stationIds: string[];
+  stationNames: string[];
+  probableCause: IsolationCause;
+}
+
+export interface ConnectivityDiagnostic {
+  connectedComponents: number;
+  largestComponentSize: number;
+  totalRepresentatives: number;
+  orphanCount: number;
+  orphanNames: string[];
+  isolatedSubgraphs: IsolatedSubgraph[];
+  componentMap: Map<string, number>; // repId → componentId (0 = largest)
 }
 
 export interface InterStationGraph {
