@@ -3,6 +3,7 @@
  * Builds a travel-time graph and runs Dijkstra from a center stop.
  */
 import type { ParsedGtfs } from './gtfs-types';
+import { MinHeap } from './min-heap';
 
 /** Parse HH:MM:SS (GTFS allows >24h) into seconds */
 function timeToSeconds(t: string | undefined): number | null {
@@ -90,31 +91,24 @@ export function buildTravelGraph(gtfs: ParsedGtfs, allowedTripIds?: Set<string>)
 
 /**
  * Dijkstra shortest path from a center stop.
+ * O(n log n) via min-heap — replaces the previous O(n²) array-sort version.
  * Returns travel time in seconds to all reachable stops.
  */
 export function dijkstra(graph: Map<string, TravelEdge[]>, startId: string): Map<string, number> {
   const dist = new Map<string, number>();
   dist.set(startId, 0);
+  const heap = new MinHeap<string>();
+  heap.push(0, startId);
 
-  // Simple priority queue (array-based, fine for transit networks)
-  const queue: { id: string; d: number }[] = [{ id: startId, d: 0 }];
-  const visited = new Set<string>();
-
-  while (queue.length > 0) {
-    queue.sort((a, b) => a.d - b.d);
-    const { id, d } = queue.shift()!;
-    if (visited.has(id)) continue;
-    visited.add(id);
-
-    const edges = graph.get(id);
-    if (!edges) continue;
-
-    for (const edge of edges) {
-      const newDist = d + edge.seconds;
-      const current = dist.get(edge.to);
-      if (current === undefined || newDist < current) {
-        dist.set(edge.to, newDist);
-        queue.push({ id: edge.to, d: newDist });
+  while (heap.size > 0) {
+    const { key: d, value: id } = heap.pop()!;
+    // Stale entry: a shorter path was already settled
+    if (d > (dist.get(id) ?? Infinity)) continue;
+    for (const edge of graph.get(id) ?? []) {
+      const nd = d + edge.seconds;
+      if (nd < (dist.get(edge.to) ?? Infinity)) {
+        dist.set(edge.to, nd);
+        heap.push(nd, edge.to);
       }
     }
   }
