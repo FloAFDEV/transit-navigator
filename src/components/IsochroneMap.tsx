@@ -142,7 +142,7 @@ function sampleBackground(
   let candidates = allStops.filter(
     s => !reachableIds.has(s.stop_id) &&
          s.stop_id !== centerId &&
-         !(s.stop_lat === 0 && s.stop_lon === 0),
+         validLatLon(s.stop_lat, s.stop_lon),
   );
 
   if (cellSize > 0) {
@@ -157,6 +157,18 @@ function sampleBackground(
   return candidates.slice(0, cap);
 }
 
+// ─── Coordinate validation ────────────────────────────────────────────────────
+
+function validLatLon(lat: unknown, lon: unknown): lat is number {
+  return (
+    typeof lat === 'number' && typeof lon === 'number' &&
+    isFinite(lat) && isFinite(lon) &&
+    !(lat === 0 && lon === 0) &&
+    lat >= -90 && lat <= 90 &&
+    lon >= -180 && lon <= 180
+  );
+}
+
 // ─── Map utilities ────────────────────────────────────────────────────────────
 
 function ZoomTracker({ onZoom }: { onZoom: (z: number) => void }) {
@@ -169,16 +181,22 @@ function ZoomTracker({ onZoom }: { onZoom: (z: number) => void }) {
 function FitBounds({ nodes, centerStop }: { nodes: IsochroneNode[]; centerStop: CenterStop | null }) {
   const map = useMap();
   useEffect(() => {
-    const pts: [number, number][] = nodes.map(n => [n.lat, n.lon]);
-    if (centerStop) pts.push([centerStop.stop_lat, centerStop.stop_lon]);
+    const pts: [number, number][] = nodes
+      .filter(n => validLatLon(n.lat, n.lon))
+      .map(n => [n.lat, n.lon]);
+    if (centerStop && validLatLon(centerStop.stop_lat, centerStop.stop_lon)) {
+      pts.push([centerStop.stop_lat, centerStop.stop_lon]);
+    }
     if (pts.length === 0) return;
     if (pts.length === 1) { map.setView(pts[0], 13); return; }
     const lats = pts.map(p => p[0]);
     const lons = pts.map(p => p[1]);
-    map.fitBounds(
-      [[Math.min(...lats), Math.min(...lons)], [Math.max(...lats), Math.max(...lons)]],
-      { padding: [40, 40] },
-    );
+    try {
+      map.fitBounds(
+        [[Math.min(...lats), Math.min(...lons)], [Math.max(...lats), Math.max(...lons)]],
+        { padding: [40, 40] },
+      );
+    } catch { /* ignore stale map ref */ }
   }, [nodes, centerStop, map]);
   return null;
 }
@@ -198,13 +216,15 @@ function FlyToSelected({
   useEffect(() => {
     if (!selectedStopId || selectedStopId === prevId.current) return;
     prevId.current = selectedStopId;
+
     const node = nodes.find(n => n.stopId === selectedStopId);
-    if (node && isFinite(node.lat) && isFinite(node.lon) && (node.lat !== 0 || node.lon !== 0)) {
-      map.flyTo([node.lat, node.lon], Math.max(map.getZoom(), 14), { duration: 0.6 }); return;
+    if (node && validLatLon(node.lat, node.lon)) {
+      try { map.flyTo([node.lat, node.lon], Math.max(map.getZoom(), 14), { duration: 0.6 }); } catch { /* ignore */ }
+      return;
     }
     const pos = stopPositions?.get(selectedStopId);
-    if (pos && isFinite(pos[0]) && isFinite(pos[1]) && (pos[0] !== 0 || pos[1] !== 0)) {
-      map.flyTo(pos, Math.max(map.getZoom(), 14), { duration: 0.6 });
+    if (pos && validLatLon(pos[0], pos[1])) {
+      try { map.flyTo([pos[0], pos[1]], Math.max(map.getZoom(), 14), { duration: 0.6 }); } catch { /* ignore */ }
     }
   }, [selectedStopId, nodes, stopPositions, map]);
 

@@ -173,7 +173,10 @@ export function computeIsochrone(
   for (const [stopId, seconds] of distances) {
     if (seconds > maxSeconds || seconds === 0) continue;
     const stop = stopMap.get(stopId);
-    if (!stop || (stop.stop_lat === 0 && stop.stop_lon === 0)) continue;
+    if (!stop) continue;
+    const { stop_lat: lat, stop_lon: lon } = stop;
+    if (!isFinite(lat) || !isFinite(lon) || (lat === 0 && lon === 0) ||
+        lat < -90 || lat > 90 || lon < -180 || lon > 180) continue;
 
     const minutes = seconds / 60;
     const band = Math.ceil(minutes / 5) * 5; // 5-minute bands
