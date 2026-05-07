@@ -599,17 +599,27 @@ const NetworkDependencyView: React.FC<Props> = ({ analysis, gtfs, selectedStopId
         if (tooltipRef.current) tooltipRef.current.style.opacity = '0';
       });
 
+    // Labels: only hubs and high-degree nodes to keep the graph readable.
+    // paint-order: stroke fill renders the white halo behind the text fill
+    // without double-rendering — no separate <rect> or second text pass needed.
+    const labelData = nodes.filter(n => n.tier === 'hub' || n.routeCount >= 5);
+
     const label = g.selectAll<SVGTextElement, GraphNode>('text.ndv-label')
-      .data(nodes.filter(n => n.tier === 'hub' || n.routeCount >= 4))
+      .data(labelData)
       .enter().append('text')
       .attr('class', 'ndv-label')
-      .attr('font-size', '7px')
-      .attr('font-family', 'IBM Plex Mono, monospace')
-      .attr('fill', '#94a3b8')
+      .attr('font-size', '10px')
+      .attr('font-family', 'system-ui, -apple-system, sans-serif')
+      .attr('font-weight', '600')
+      .attr('fill', '#0f172a')
+      .attr('stroke', 'rgba(255,255,255,0.92)')
+      .attr('stroke-width', '3px')
+      .attr('stroke-linejoin', 'round')
+      .attr('paint-order', 'stroke fill')
       .attr('text-anchor', 'middle')
-      .attr('dy', d => -(nodeRadius(d, viewRef.current) + 5))
+      .attr('dy', d => -(nodeRadius(d, viewRef.current) + 6))
       .attr('pointer-events', 'none')
-      .text(d => d.name.length > 22 ? d.name.slice(0, 20) + '…' : d.name);
+      .text(d => d.name.length > 20 ? d.name.slice(0, 18) + '…' : d.name);
 
     sim.on('tick', () => {
       link
@@ -653,7 +663,7 @@ const NetworkDependencyView: React.FC<Props> = ({ analysis, gtfs, selectedStopId
       .attr('fill', d => nodeColor(d, view));
 
     svg.selectAll<SVGTextElement, GraphNode>('text.ndv-label')
-      .attr('dy', d => -(nodeRadius(d, view) + 5));
+      .attr('dy', d => -(nodeRadius(d, view) + 6));
 
     svg.selectAll<SVGCircleElement, GraphNode>('circle.ndv-ap')
       .attr('display', view === 'intelligence' ? 'block' : 'none');
