@@ -34,12 +34,12 @@ interface BucketStyle {
 }
 
 const BUCKET_STYLES: Record<number, BucketStyle> = {
-   5: { color: '#16a34a', baseRadius: 7, fillOpacity: 1.00, weight: 1.8 }, // green  — 0–5 min
-  10: { color: '#65a30d', baseRadius: 6, fillOpacity: 0.88, weight: 1.4 }, // lime   — 5–10
-  15: { color: '#d97706', baseRadius: 5, fillOpacity: 0.74, weight: 1.1 }, // amber  — 10–15
-  20: { color: '#ea580c', baseRadius: 4, fillOpacity: 0.60, weight: 0.9 }, // orange — 15–20
-  25: { color: '#dc2626', baseRadius: 3, fillOpacity: 0.46, weight: 0.7 }, // red    — 20–25
-  99: { color: '#7c3aed', baseRadius: 3, fillOpacity: 0.32, weight: 0.5 }, // violet — 25+
+   5: { color: '#16a34a', baseRadius: 7, fillOpacity: 1.00, weight: 2.0 }, // green  — 0–5 min
+  10: { color: '#65a30d', baseRadius: 6, fillOpacity: 0.92, weight: 1.8 }, // lime   — 5–10
+  15: { color: '#d97706', baseRadius: 5, fillOpacity: 0.82, weight: 1.6 }, // amber  — 10–15
+  20: { color: '#ea580c', baseRadius: 5, fillOpacity: 0.72, weight: 1.4 }, // orange — 15–20
+  25: { color: '#dc2626', baseRadius: 4, fillOpacity: 0.62, weight: 1.2 }, // red    — 20–25
+  99: { color: '#7c3aed', baseRadius: 4, fillOpacity: 0.52, weight: 1.0 }, // violet — 25+
 };
 
 function bucketStyle(band: number): BucketStyle {
@@ -54,29 +54,29 @@ function bucketStyle(band: number): BucketStyle {
 // ─── Zoom → radius scaling (INVERSE relationship) ─────────────────────────────
 //
 // Low zoom (overview) → larger dots visible at a glance.
-// High zoom (street) → small dots that don't overlap, making time slices readable.
+// High zoom (street) → dots shrink to avoid blob but never disappear.
 //
-// Curve is intentionally steep above z12 so zooming reveals structure instead
-// of creating a blob. Base radii are kept small (3–7px) so even at z9 the
-// largest stop is only ~11px — enough to read, not enough to obscure neighbours.
+// Floor at 4px radius ensures dots stay legible against white map tiles.
+// Curve flattens after z14 so zooming in reveals stop positions without
+// making them invisible.
 //
-//   z  9 → ×1.55  |  z 12 → ×0.85  |  z 15 → ×0.32
-//   z 10 → ×1.28  |  z 13 → ×0.62  |  z 16 → ×0.22
-//   z 11 → ×1.05  |  z 14 → ×0.45  |
+//   z  9 → ×1.55  |  z 12 → ×0.90  |  z 15 → ×0.52
+//   z 10 → ×1.28  |  z 13 → ×0.72  |  z 16 → ×0.44
+//   z 11 → ×1.08  |  z 14 → ×0.60  |
 
 function zoomScale(zoom: number): number {
   if (zoom <=  9) return 1.55;
   if (zoom <= 10) return 1.28;
-  if (zoom <= 11) return 1.05;
-  if (zoom <= 12) return 0.85;
-  if (zoom <= 13) return 0.62;
-  if (zoom <= 14) return 0.45;
-  if (zoom <= 15) return 0.32;
-  return 0.22;
+  if (zoom <= 11) return 1.08;
+  if (zoom <= 12) return 0.90;
+  if (zoom <= 13) return 0.72;
+  if (zoom <= 14) return 0.60;
+  if (zoom <= 15) return 0.52;
+  return 0.44;
 }
 
 function scaledRadius(base: number, zoom: number): number {
-  return Math.max(2, Math.round(base * zoomScale(zoom)));
+  return Math.max(4, Math.round(base * zoomScale(zoom)));
 }
 
 // ─── Reachable LOD ────────────────────────────────────────────────────────────
@@ -300,16 +300,19 @@ const IsochroneMap: React.FC<Props> = ({
         <LayerGroup>
           {backgroundStops.map(s => {
             const isHov = s.stop_id === hoveredStopId;
+            // Background stops: always at least 3px so they remain clickable and
+            // legible against white map tiles even at high zoom.
+            const bgR = isHov ? Math.max(4, Math.round(4 * scale)) : Math.max(3, Math.round(3 * scale));
             return (
               <CircleMarker
                 key={`bg-${s.stop_id}`}
                 center={[s.stop_lat, s.stop_lon]}
-                radius={isHov ? Math.max(2, Math.round(3.5 * scale)) : Math.max(1, Math.round(2.5 * scale))}
+                radius={bgR}
                 pathOptions={{
-                  color:       isHov ? '#94a3b8' : 'transparent',
+                  color:       '#64748b',
                   fillColor:   '#94a3b8',
-                  fillOpacity: isHov ? 0.55 : (hasIsochrone ? 0.22 : 0.38),
-                  weight:      isHov ? 1 : 0,
+                  fillOpacity: isHov ? 0.65 : (hasIsochrone ? 0.35 : 0.50),
+                  weight:      isHov ? 1.2 : 0.8,
                 }}
                 eventHandlers={{
                   click:     () => { onSetCenter?.(s.stop_id); onSelectStop?.(s.stop_id); },
@@ -346,10 +349,11 @@ const IsochroneMap: React.FC<Props> = ({
                 center={[node.lat, node.lon]}
                 radius={isHovered ? r + 2 : r}
                 pathOptions={{
-                  color:       isSelected ? '#ffffff' : bs.color,
+                  color:       isSelected ? '#ffffff' : (isHovered ? '#ffffff' : bs.color),
                   fillColor:   bs.color,
                   fillOpacity: isSelected || isHovered ? 1 : bs.fillOpacity,
-                  weight:      isSelected ? 2.5 : bs.weight,
+                  weight:      isSelected ? 2.5 : (isHovered ? 2 : Math.max(1.5, bs.weight)),
+                  opacity:     1,
                 }}
                 eventHandlers={{
                   click:     () => { onSelectStop?.(node.stopId); onSetCenter?.(node.stopId); },
