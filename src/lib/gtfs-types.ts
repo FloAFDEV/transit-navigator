@@ -81,6 +81,10 @@ export interface StationNode {
   nodeType: StationNodeType;
   lat: number;
   lon: number;
+  // Grouping: parent_station id (or stop_id when no parent).
+  // Multiple stop_ids with the same group are merged into one node in fallback mode.
+  group: string;
+  childCount: number;       // number of merged stop_ids (>1 = deduplicated)
   frictionScore: number;    // 0–1 (0=fluid, 1=blocking)
   accessibilityScore: number; // 0–1 (1=fully accessible)
 }

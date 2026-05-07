@@ -140,6 +140,55 @@ describe('computeJES', () => {
   });
 });
 
+describe('deduplication (fallback mode)', () => {
+  // Station with 2 platforms sharing the same parent_station, no pathways
+  const DEDUP_GTFS: ParsedGtfs = {
+    routes: [{ route_id: 'M1', route_short_name: 'M1', route_long_name: 'Métro 1', route_type: 1 }],
+    trips: [{ trip_id: 'T1', route_id: 'M1', service_id: 'WD' }],
+    stopTimes: [{ trip_id: 'T1', stop_id: 'CHILD_A', stop_sequence: 1 }],
+    stops: [
+      { stop_id: 'PARENT', stop_name: 'Jean Jaurès', stop_lat: 43.6, stop_lon: 1.44, location_type: 1 },
+      // Two direction-specific stops — same name, same parent, slightly different coords
+      { stop_id: 'CHILD_A', stop_name: 'Jean Jaurès', stop_lat: 43.6001, stop_lon: 1.4401, location_type: 0, parent_station: 'PARENT' },
+      { stop_id: 'CHILD_B', stop_name: 'Jean Jaurès', stop_lat: 43.6002, stop_lon: 1.4402, location_type: 0, parent_station: 'PARENT' },
+      // Unrelated station nearby — should NOT be included
+      { stop_id: 'OTHER', stop_name: 'Capitole', stop_lat: 43.61, stop_lon: 1.45, location_type: 0 },
+    ],
+    pathways: [],  // no pathways → fallback
+    transfers: [],
+  };
+
+  it('collapses same-parent children into one representative node', () => {
+    const graph = buildStationGraph(DEDUP_GTFS, 'PARENT')!;
+    // PARENT + CHILD_A + CHILD_B share the same group (parent = PARENT)
+    // → only ONE node should exist for the group (the representative = PARENT itself)
+    // (PARENT is in stopMap and is a valid stop_id → it becomes the representative)
+    expect(graph.nodes.has('PARENT')).toBe(true);
+    // CHILD_A and CHILD_B should be merged into PARENT — NOT separate nodes
+    expect(graph.nodes.has('CHILD_A')).toBe(false);
+    expect(graph.nodes.has('CHILD_B')).toBe(false);
+  });
+
+  it('childCount reflects number of merged stop_ids', () => {
+    const graph = buildStationGraph(DEDUP_GTFS, 'PARENT')!;
+    const repNode = graph.nodes.get('PARENT')!;
+    // PARENT + CHILD_A + CHILD_B → 3 members in the group
+    expect(repNode.childCount).toBe(3);
+  });
+
+  it('no self-loops in geographic fallback', () => {
+    const graph = buildStationGraph(DEDUP_GTFS, 'PARENT')!;
+    for (const edge of graph.edges) {
+      expect(edge.from).not.toBe(edge.to);
+    }
+  });
+
+  it('does not include nodes from unrelated stations', () => {
+    const graph = buildStationGraph(DEDUP_GTFS, 'PARENT')!;
+    expect(graph.nodes.has('OTHER')).toBe(false);
+  });
+});
+
 describe('jesLabel', () => {
   it('maps score ranges to correct labels', () => {
     expect(jesLabel(90).label).toBe('Excellent');
