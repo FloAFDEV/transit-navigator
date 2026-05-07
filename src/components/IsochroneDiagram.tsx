@@ -242,7 +242,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId
         .attr('cursor', 'pointer')
         .on('click', () => onSelectStopRef.current?.(node.stopId))
         .on('mouseenter', function (event) {
-          d3.select(this).attr('r', dotRadiusRef.current * 2).attr('fill-opacity', 1);
+          d3.select(this).attr('r', dotRadiusRef.current * 2).attr('fill-opacity', 1).attr('stroke-width', 0.5);
           if (tooltipRef.current) {
             tooltipRef.current.style.opacity = '1';
             tooltipRef.current.style.left = `${event.offsetX + 12}px`;
@@ -262,7 +262,7 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId
             .attr('r', dotRadiusRef.current)
             .attr('fill-opacity', 0.9)
             .attr('stroke', isSel ? '#ffffff' : 'hsl(var(--background))')
-            .attr('stroke-width', isSel ? 2.5 : 1);
+            .attr('stroke-width', isSel ? 0.5 : Math.max(0.08, 0.8 / (zoomRef.current ? (d3.zoomTransform(svgRef.current!).k) : 1)));
           if (tooltipRef.current) tooltipRef.current.style.opacity = '0';
         });
     });
@@ -318,15 +318,20 @@ const IsochroneDiagram: React.FC<Props> = ({ gtfs, onNodesChange, selectedStopId
         const { k } = event.transform;
         content.attr('transform', event.transform.toString());
 
-        // Inverse dot scaling: screen radius = baseDotRadius / k^0.7
-        // In content-space: contentR = screenR / k = baseDotRadius / k^1.7
+        // Inverse dot scaling keeps visual radius roughly constant.
+        // contentR = baseDotRadius / k^1.7 → visual radius ≈ baseDotRadius / k^0.7
         const r = Math.max(0.6, baseDotRadius / Math.pow(k, 1.7));
-        content.selectAll<SVGCircleElement, unknown>('.stop-dot').attr('r', r);
+        // Stroke-width must shrink with zoom: at k=8 a 1px stroke becomes 8px visual,
+        // wider than the dot, hiding the fill under a white ring.
+        const sw = Math.max(0.08, 0.8 / k);
+        content.selectAll<SVGCircleElement, unknown>('.stop-dot')
+          .attr('r', r)
+          .attr('stroke-width', sw);
         dotRadiusRef.current = r;
 
         // Route lines stay visually thin (screen stroke-width ≈ 2px)
         content.selectAll('.route-path')
-          .attr('stroke-width', Math.max(0.4, 2.5 / k));
+          .attr('stroke-width', Math.max(0.3, 2.5 / k));
       });
     svg.call(zoom);
     zoomRef.current = zoom;
