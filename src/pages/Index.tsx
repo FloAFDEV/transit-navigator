@@ -8,6 +8,7 @@ import NetworkDependencyView from '@/components/NetworkDependencyView';
 import IsochroneDiagram from '@/components/IsochroneDiagram';
 import NetworkNarrative from '@/components/NetworkNarrative';
 import SignageGuide from '@/components/SignageGuide';
+import StationGraphView from '@/components/StationGraphView';
 import RouteDetailPanel from '@/components/RouteDetailPanel';
 import GlossaryPanel from '@/components/GlossaryPanel';
 import PdfExportButton from '@/components/PdfExportButton';
@@ -26,7 +27,7 @@ import { toast } from 'sonner';
 import { Share2, Image, Monitor } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-type ViewTab = 'density' | 'transit' | 'topology' | 'friction' | 'isochrone' | 'dependencies';
+type ViewTab = 'density' | 'transit' | 'topology' | 'friction' | 'isochrone' | 'dependencies' | 'station';
 
 interface IsochroneSnapshot {
   nodes: IsochroneNode[];
@@ -87,7 +88,7 @@ const Index: React.FC = () => {
     const tab = params.get('tab') as ViewTab | null;
     const mode = params.get('mode') as TransportMode | 'all' | null;
     const route = params.get('route');
-    if (tab && ['density', 'transit', 'topology', 'friction', 'isochrone', 'dependencies'].includes(tab)) setActiveTab(tab);
+    if (tab && ['density', 'transit', 'topology', 'friction', 'isochrone', 'dependencies', 'station'].includes(tab)) setActiveTab(tab);
     if (mode && mode !== 'present') setFilterMode(mode as TransportMode | 'all');
     if (route) setSelectedRouteId(route);
   }, []);
@@ -219,6 +220,7 @@ const Index: React.FC = () => {
     { key: 'friction',     label: 'Points de congestion',   desc: 'Stations complexes à forte charge — potentiels goulets d\'étranglement' },
     { key: 'isochrone',    label: 'Accessibilité en temps', desc: 'Depuis un arrêt, quelles zones peut-on atteindre en X minutes ?' },
     { key: 'dependencies', label: 'Analyse stratégique',    desc: 'Hubs critiques, stations fragiles et opportunités de développement' },
+    { key: 'station',      label: 'Graphe intra-station',   desc: 'Nœuds, parcours internes, coûts de correspondance et score JES par station' },
   ];
 
   const modes: (TransportMode | 'all')[] = ['all', 'bus', 'metro', 'tram', 'train', 'cable'];
@@ -378,6 +380,9 @@ const Index: React.FC = () => {
               onSelectStop={setSelectedStopId}
             />
           )}
+          {activeTab === 'station' && gtfsData && (
+            <StationGraphView gtfs={gtfsData} />
+          )}
 
           <div ref={isochroneRef} style={{ display: activeTab === 'isochrone' ? 'block' : 'none' }}>
             {gtfsData && (
@@ -393,7 +398,7 @@ const Index: React.FC = () => {
               <div className="flex flex-col items-center gap-4 pt-4">
                 <p className="text-xs text-muted-foreground">Isochrone restauré depuis le lien partagé</p>
                 <IsochroneDiagram
-                  gtfs={{ routes: [], trips: [], stopTimes: [], stops: isochroneSnapshot.nodes.map(n => ({ stop_id: n.stopId, stop_name: n.stopName, stop_lat: n.lat, stop_lon: n.lon })) }}
+                  gtfs={{ routes: [], trips: [], stopTimes: [], stops: isochroneSnapshot.nodes.map(n => ({ stop_id: n.stopId, stop_name: n.stopName, stop_lat: n.lat, stop_lon: n.lon })), pathways: [], transfers: [] }}
                   onNodesChange={handleIsochroneChange}
                 />
               </div>
