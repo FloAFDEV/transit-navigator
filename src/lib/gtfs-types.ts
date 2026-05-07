@@ -138,6 +138,41 @@ export interface JES {
   breakdown: JESBreakdown;
 }
 
+// --- Inter-station graph types ---
+
+export interface InterStationNode {
+  nodeId: string;      // representative stop_id (parent_station when available)
+  stopName: string;
+  lat: number;
+  lon: number;
+  isCenter: boolean;
+  travelSeconds: number;   // shortest path from center (0 = center)
+  routeCount: number;      // distinct routes serving this node
+  modes: TransportMode[];  // transport modes
+  childStopIds: string[];  // all stop_ids aggregated into this node
+}
+
+export interface InterStationEdge {
+  from: string;            // nodeId
+  to: string;              // nodeId
+  avgSeconds: number;      // average travel time from stop_times
+  tripCount: number;       // number of trips using this pair
+  isBidirectional: boolean;
+  source: 'stop_times' | 'transfer' | 'geographic';
+}
+
+export interface InterStationGraph {
+  centerNodeId: string;
+  centerName: string;
+  nodes: Map<string, InterStationNode>;
+  edges: InterStationEdge[];
+  adjacency: Map<string, InterStationEdge[]>;
+  maxTravelSeconds: number;
+  // Debug stats
+  totalStopTimesEdges: number;
+  transferEdgeCount: number;
+}
+
 /** Map GTFS route_type to our transport mode */
 export function routeTypeToMode(routeType: number): TransportMode {
   switch (routeType) {

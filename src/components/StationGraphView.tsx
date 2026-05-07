@@ -1,105 +1,72 @@
 /**
- * StationGraphView — intra-station graph visualization with JES panel.
+ * StationGraphView — dual-mode station graph visualization.
  *
- * Nodes:
- *   - Size ∝ 1/(1+frictionScore) → larger = more fluid
- *   - Color = nodeType
- *   - Badge = childCount when >1 (merged stop_ids)
- *   - Dashed orange halo = frictionScore > 0.3
+ * PRIMARY (always non-empty): inter-station neighborhood graph
+ *   - Nodes = stops reachable within N minutes via stop_times
+ *   - Edges = average travel times from stop_times + transfers
+ *   - Node color = transport mode; size = route count; hue = travel time
+ *   - Center node highlighted with ring
  *
- * Edges:
- *   - Stroke-width ∝ costSeconds
- *   - Color = pathway mode (red if slope/width issue)
+ * SECONDARY (toggle, only when pathways.txt present): intra-station physical graph
+ *   - Physical layout of platforms, stairs, elevators inside ONE station
  *
- * Cluster force: nodes in the same group attract each other.
- *
- * Click node A → node B: shows TransferCost breakdown + JES.
+ * Click A → click B: shows transfer cost + JES between the two nodes.
  */
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import * as d3 from 'd3';
-import type { ParsedGtfs, StationGraph, StationNode, StationEdge, TransferCost } from '@/lib/gtfs-types';
+import type { ParsedGtfs, InterStationGraph, InterStationNode, InterStationEdge, TransferCost } from '@/lib/gtfs-types';
+import { buildInterStationGraph } from '@/lib/inter-station-graph';
 import { buildStationGraph, getStationCandidates } from '@/lib/station-graph';
 import { computeTransferCosts, getTransferCost } from '@/lib/transfer-costs';
 import { computeJES, jesLabel, jesImprovementActions } from '@/lib/jes';
+import { modeColors } from '@/lib/gtfs-types';
 
-// --- Visual constants ---
-
-const NODE_TYPE_COLOR: Record<string, string> = {
-  stop:          'hsl(234, 62%, 60%)',
-  station:       'hsl(0, 72%, 51%)',
-  entrance:      'hsl(142, 71%, 45%)',
-  generic_node:  'hsl(215, 16%, 55%)',
-  boarding_area: 'hsl(38, 92%, 50%)',
-};
-
-const PATHWAY_MODE_COLOR: Record<number, string> = {
-  0: 'hsl(215, 16%, 55%)',
-  1: 'hsl(215, 16%, 70%)',
-  2: 'hsl(24, 90%, 52%)',
-  3: 'hsl(215, 16%, 70%)',
-  4: 'hsl(38, 92%, 50%)',
-  5: 'hsl(280, 60%, 55%)',
-  6: 'hsl(0, 72%, 51%)',
-  7: 'hsl(0, 72%, 51%)',
-};
-
-const PATHWAY_MODE_LABEL: Record<number, string> = {
-  0: 'Correspondance',
-  1: 'Couloir',
-  2: 'Escalier',
-  3: 'Tapis roulant',
-  4: 'Escalator',
-  5: 'Ascenseur',
-  6: 'Portique',
-  7: 'Sortie',
-};
+// Travel-time color scale: green (0 min) → amber (10 min) → red (20 min)
+function travelTimeColor(seconds: number, maxSeconds: number): string {
+  const t = Math.min(1, seconds / maxSeconds);
+  if (t < 0.5) {
+    // green → amber
+    const h = 142 - (142 - 38) * (t / 0.5);
+    const l = 45 + (50 - 45) * (t / 0.5);
+    return `hsl(${h.toFixed(0)}, 71%, ${l.toFixed(0)}%)`;
+  }
+  // amber → red
+  const t2 = (t - 0.5) / 0.5;
+  const h = 38 - (38 - 0) * t2;
+  return `hsl(${h.toFixed(0)}, 80%, 50%)`;
+}
 
 interface SimNode extends d3.SimulationNodeDatum {
   id: string;
-  node: StationNode;
+  node: InterStationNode;
 }
 
 interface SimLink extends d3.SimulationLinkDatum<SimNode> {
-  edge: StationEdge;
-}
-
-// Stable group-centroid index built once per render
-function buildGroupCentroids(simNodes: SimNode[]): Map<string, { x: number; y: number }> {
-  const acc = new Map<string, { sx: number; sy: number; n: number }>();
-  for (const sn of simNodes) {
-    const g = sn.node.group;
-    const prev = acc.get(g) ?? { sx: 0, sy: 0, n: 0 };
-    acc.set(g, { sx: prev.sx + (sn.x ?? 0), sy: prev.sy + (sn.y ?? 0), n: prev.n + 1 });
-  }
-  const result = new Map<string, { x: number; y: number }>();
-  for (const [g, { sx, sy, n }] of acc) {
-    result.set(g, { x: sx / n, y: sy / n });
-  }
-  return result;
+  edge: InterStationEdge;
 }
 
 interface Props {
   gtfs: ParsedGtfs;
 }
 
-// Debug info produced by buildStationGraph
-interface DebugInfo {
-  rawStopCount: number;
-  groupCount: number;
-  dupRatio: number;
-  hasPathways: boolean;
-}
+type ViewMode = 'inter' | 'intra';
 
 const StationGraphView: React.FC<Props> = ({ gtfs }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const simRef = useRef<d3.Simulation<SimNode, SimLink> | null>(null);
 
   const [selectedStationId, setSelectedStationId] = useState<string>('');
-  const [graph, setGraph] = useState<StationGraph | null>(null);
-  const [transferCosts, setTransferCosts] = useState<TransferCost[]>([]);
+  const [maxMinutes, setMaxMinutes] = useState(15);
+  const [viewMode, setViewMode] = useState<ViewMode>('inter');
   const [fromNodeId, setFromNodeId] = useState<string | null>(null);
   const [toNodeId, setToNodeId] = useState<string | null>(null);
-  const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
+
+  // Inter-station graph state
+  const [interGraph, setInterGraph] = useState<InterStationGraph | null>(null);
+
+  // Intra-station graph state (pathways)
+  const [intraTransferCosts, setIntraTransferCosts] = useState<TransferCost[]>([]);
+  const [hasPathways, setHasPathways] = useState(false);
 
   const candidates = useMemo(() => getStationCandidates(gtfs, 30), [gtfs]);
 
@@ -111,33 +78,26 @@ const StationGraphView: React.FC<Props> = ({ gtfs }) => {
 
   useEffect(() => {
     if (!selectedStationId) return;
-
-    // Count raw stop_ids before buildStationGraph to produce debug info
-    const rawStopIds = new Set<string>([selectedStationId]);
-    for (const s of gtfs.stops) {
-      if (s.parent_station === selectedStationId) rawStopIds.add(s.stop_id);
-    }
-
-    const g = buildStationGraph(gtfs, selectedStationId);
-    setGraph(g);
     setFromNodeId(null);
     setToNodeId(null);
 
-    if (g) {
-      setTransferCosts(computeTransferCosts(g, gtfs));
-      const groupCount = g.nodes.size;
-      const rawCount = rawStopIds.size;
-      setDebugInfo({
-        rawStopCount: rawCount,
-        groupCount,
-        dupRatio: rawCount > 0 ? Math.round(((rawCount - groupCount) / rawCount) * 100) : 0,
-        hasPathways: g.edges.some(e => e.pathwayMode > 0),
-      });
+    // Build inter-station graph (always)
+    const ig = buildInterStationGraph(gtfs, selectedStationId, maxMinutes);
+    setInterGraph(ig);
+
+    // Check for intra-station pathways
+    const intra = buildStationGraph(gtfs, selectedStationId);
+    const pwEdges = intra ? intra.edges.filter(e => e.pathwayMode > 0).length : 0;
+    setHasPathways(pwEdges > 0);
+    if (intra && pwEdges > 0) {
+      setIntraTransferCosts(computeTransferCosts(intra, gtfs));
     } else {
-      setTransferCosts([]);
-      setDebugInfo(null);
+      setIntraTransferCosts([]);
     }
-  }, [selectedStationId, gtfs]);
+
+    // Default to inter mode (always has content)
+    setViewMode('inter');
+  }, [selectedStationId, maxMinutes, gtfs]);
 
   const handleNodeClick = useCallback((nodeId: string) => {
     if (!fromNodeId) {
@@ -151,123 +111,116 @@ const StationGraphView: React.FC<Props> = ({ gtfs }) => {
     }
   }, [fromNodeId]);
 
-  const selectedTransfer = useMemo<TransferCost | undefined>(() => {
-    if (!fromNodeId || !toNodeId) return undefined;
-    return getTransferCost(transferCosts, fromNodeId, toNodeId);
-  }, [transferCosts, fromNodeId, toNodeId]);
+  // JES for inter-station pair
+  const interJES = useMemo(() => {
+    if (!interGraph || !fromNodeId || !toNodeId) return null;
+    const fromNode = interGraph.nodes.get(fromNodeId);
+    const toNode = interGraph.nodes.get(toNodeId);
+    if (!fromNode || !toNode) return null;
 
-  const selectedJES = useMemo(() => {
-    if (!selectedTransfer) return null;
-    return computeJES(
-      [selectedTransfer.fromStopId, selectedTransfer.toStopId],
-      0,
-      [selectedTransfer],
-      graph?.nodes.get(selectedTransfer.toStopId)?.accessibilityScore === 1 ? 0 : 90,
-    );
-  }, [selectedTransfer, graph]);
+    // Find shortest-path cost using adjacency
+    const visited = new Set<string>();
+    const dist = new Map<string, number>([[fromNodeId, 0]]);
+    const heap: { d: number; id: string }[] = [{ d: 0, id: fromNodeId }];
+    heap.sort((a, b) => a.d - b.d);
+    while (heap.length > 0) {
+      heap.sort((a, b) => a.d - b.d);
+      const { d, id } = heap.shift()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      for (const edge of interGraph.adjacency.get(id) ?? []) {
+        const nd = d + edge.avgSeconds;
+        if (nd < (dist.get(edge.to) ?? Infinity)) {
+          dist.set(edge.to, nd);
+          heap.push({ d: nd, id: edge.to });
+        }
+      }
+    }
+    const travelSeconds = dist.get(toNodeId);
+    if (travelSeconds === undefined) return null;
 
-  // --- D3 rendering ---
+    return computeJES([fromNodeId, toNodeId], travelSeconds, [], 0);
+  }, [interGraph, fromNodeId, toNodeId]);
+
+  // D3 rendering — inter-station
   useEffect(() => {
-    if (!graph || !svgRef.current) return;
+    if (viewMode !== 'inter' || !interGraph || !svgRef.current) return;
 
     const svg = d3.select(svgRef.current);
     svg.selectAll('*').remove();
 
-    const width = svgRef.current.clientWidth || 800;
-    const height = svgRef.current.clientHeight || 560;
+    if (interGraph.nodes.size === 0) return;
 
-    const defs = svg.append('defs');
-    defs.append('marker')
-      .attr('id', 'arrow')
-      .attr('viewBox', '0 -4 8 8')
-      .attr('refX', 14)
-      .attr('refY', 0)
-      .attr('markerWidth', 6)
-      .attr('markerHeight', 6)
-      .attr('orient', 'auto')
-      .append('path')
-      .attr('d', 'M0,-4L8,0L0,4')
-      .attr('fill', 'hsl(215, 16%, 55%)');
+    const width = svgRef.current.clientWidth || 800;
+    const height = svgRef.current.clientHeight || 520;
 
     const container = svg.append('g').attr('class', 'zoom-container');
-
     svg.call(
       d3.zoom<SVGSVGElement, unknown>()
-        .scaleExtent([0.3, 6])
-        .on('zoom', (event) => container.attr('transform', event.transform.toString()))
+        .scaleExtent([0.2, 6])
+        .on('zoom', ev => container.attr('transform', ev.transform.toString()))
     );
 
-    // Deduplicate edges for D3 visualization
-    const seenEdgeKeys = new Set<string>();
+    // Deduplicate edges for display
+    const seenKeys = new Set<string>();
     const simLinks: SimLink[] = [];
-    for (const edge of graph.edges) {
+    for (const edge of interGraph.edges) {
       const key = [edge.from, edge.to].sort().join('|||');
-      if (seenEdgeKeys.has(key)) continue;
-      seenEdgeKeys.add(key);
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
       simLinks.push({ source: edge.from, target: edge.to, edge });
     }
 
-    const simNodes: SimNode[] = [...graph.nodes.values()].map(node => ({ id: node.nodeId, node }));
+    const simNodes: SimNode[] = [...interGraph.nodes.values()].map(node => ({
+      id: node.nodeId,
+      node,
+      // Radial initial position: center at canvas center, others by travel time
+      x: node.isCenter
+        ? width / 2
+        : width / 2 + (node.travelSeconds / interGraph.maxTravelSeconds) * (Math.min(width, height) * 0.4) * Math.cos(Math.random() * 2 * Math.PI),
+      y: node.isCenter
+        ? height / 2
+        : height / 2 + (node.travelSeconds / interGraph.maxTravelSeconds) * (Math.min(width, height) * 0.4) * Math.sin(Math.random() * 2 * Math.PI),
+    }));
 
-    // Assign initial positions in a circle to help the simulation converge faster
-    const nodeCount = simNodes.length;
-    simNodes.forEach((sn, i) => {
-      const angle = (2 * Math.PI * i) / nodeCount;
-      sn.x = width / 2 + (Math.min(width, height) * 0.3) * Math.cos(angle);
-      sn.y = height / 2 + (Math.min(width, height) * 0.3) * Math.sin(angle);
-    });
-
-    // Compute stable group positions (used by cluster force)
-    const groupCount = new Map<string, number>();
-    for (const sn of simNodes) {
-      groupCount.set(sn.node.group, (groupCount.get(sn.node.group) ?? 0) + 1);
-    }
-    const multiGroupIds = new Set([...groupCount.entries()].filter(([, c]) => c > 1).map(([g]) => g));
+    // Fix center node at canvas center initially
+    const centerSim = simNodes.find(n => n.node.isCenter);
+    if (centerSim) { centerSim.fx = width / 2; centerSim.fy = height / 2; }
 
     simRef.current = d3.forceSimulation<SimNode, SimLink>(simNodes)
       .force('link', d3.forceLink<SimNode, SimLink>(simLinks)
         .id(d => d.id)
-        .distance(d => Math.max(60, d.edge.costSeconds * 0.5))
+        .distance(d => Math.max(50, Math.min(200, d.edge.avgSeconds * 0.15)))
+        .strength(0.3)
       )
-      .force('charge', d3.forceManyBody().strength(-280))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide(22))
-      // Cluster force: pull same-group nodes toward their group centroid
-      .force('cluster', () => {
-        const centroids = buildGroupCentroids(simNodes);
-        for (const sn of simNodes) {
-          if (!multiGroupIds.has(sn.node.group)) continue;
-          const c = centroids.get(sn.node.group);
-          if (!c) continue;
-          const alpha = 0.05; // gentle pull
-          sn.vx = (sn.vx ?? 0) + (c.x - (sn.x ?? 0)) * alpha;
-          sn.vy = (sn.vy ?? 0) + (c.y - (sn.y ?? 0)) * alpha;
-        }
-      });
+      .force('charge', d3.forceManyBody().strength(-180))
+      .force('center', d3.forceCenter(width / 2, height / 2).strength(0.05))
+      .force('collision', d3.forceCollide(18));
 
     // Edges
     const linkEl = container.append('g').attr('class', 'links')
       .selectAll<SVGLineElement, SimLink>('line')
       .data(simLinks)
       .join('line')
-      .attr('stroke', d => {
-        if (d.edge.hasSlopeIssue || d.edge.hasWidthIssue) return 'hsl(0, 72%, 51%)';
-        return PATHWAY_MODE_COLOR[d.edge.pathwayMode] ?? 'hsl(215, 16%, 55%)';
+      .attr('stroke', d => d.edge.source === 'transfer' ? 'hsl(280, 60%, 55%)' : 'hsl(215, 16%, 60%)')
+      .attr('stroke-width', d => {
+        // Thicker = faster (more capacity)
+        const inv = 1 / Math.max(30, d.edge.avgSeconds / 60);
+        return Math.max(0.8, Math.min(3.5, inv * 100));
       })
-      .attr('stroke-width', d => Math.max(1, Math.min(5, d.edge.costSeconds / 20)))
-      .attr('stroke-opacity', 0.65)
-      .attr('marker-end', d => d.edge.isBidirectional ? '' : 'url(#arrow)');
+      .attr('stroke-opacity', d => d.edge.source === 'transfer' ? 0.5 : 0.4)
+      .attr('stroke-dasharray', d => d.edge.source === 'transfer' ? '4 2' : '');
 
-    // Edge cost labels
+    // Edge travel time labels (only for shorter edges to avoid clutter)
     const edgeLabelEl = container.append('g').attr('class', 'edge-labels')
       .selectAll<SVGTextElement, SimLink>('text')
-      .data(simLinks)
+      .data(simLinks.filter(l => l.edge.avgSeconds < 300))
       .join('text')
       .attr('text-anchor', 'middle')
-      .attr('font-size', 9)
-      .attr('fill', 'hsl(215, 16%, 40%)')
+      .attr('font-size', 8)
+      .attr('fill', 'hsl(215, 16%, 45%)')
       .attr('pointer-events', 'none')
-      .text(d => `${d.edge.costSeconds}s`);
+      .text(d => `${Math.round(d.edge.avgSeconds / 60)}min`);
 
     // Node groups
     const nodeEl = container.append('g').attr('class', 'nodes')
@@ -279,63 +232,79 @@ const StationGraphView: React.FC<Props> = ({ gtfs }) => {
         d3.drag<SVGGElement, SimNode>()
           .on('start', (event, d) => {
             if (!event.active) simRef.current?.alphaTarget(0.3).restart();
+            // Unfix center on manual drag
             d.fx = d.x; d.fy = d.y;
           })
           .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
           .on('end', (event, d) => {
             if (!event.active) simRef.current?.alphaTarget(0);
-            d.fx = null; d.fy = null;
+            if (!d.node.isCenter) { d.fx = null; d.fy = null; }
           })
       );
 
-    const nodeRadius = (d: SimNode) => Math.max(7, 16 / (1 + d.node.frictionScore));
+    const nodeRadius = (d: SimNode) => {
+      if (d.node.isCenter) return 14;
+      return Math.max(6, Math.min(12, 5 + d.node.routeCount * 1.2));
+    };
 
-    // Friction halo (insert before circle so it renders behind)
-    nodeEl.filter(d => d.node.frictionScore > 0.3)
+    // Center ring
+    nodeEl.filter(d => d.node.isCenter)
       .append('circle')
-      .attr('class', 'friction-halo')
-      .attr('r', d => nodeRadius(d) + 6)
+      .attr('r', d => nodeRadius(d) + 7)
       .attr('fill', 'none')
-      .attr('stroke', 'hsl(24, 90%, 52%)')
-      .attr('stroke-width', 1)
-      .attr('stroke-opacity', d => d.node.frictionScore * 0.8)
-      .attr('stroke-dasharray', '3 2');
+      .attr('stroke', 'hsl(234, 90%, 65%)')
+      .attr('stroke-width', 2)
+      .attr('stroke-dasharray', '5 3');
 
-    // Main circle
+    // Main circle — color by travel time
     nodeEl.append('circle')
       .attr('class', 'main-circle')
       .attr('r', nodeRadius)
-      .attr('fill', d => NODE_TYPE_COLOR[d.node.nodeType] ?? 'hsl(215, 16%, 55%)')
-      .attr('fill-opacity', 0.88)
+      .attr('fill', d => travelTimeColor(d.node.travelSeconds, interGraph.maxTravelSeconds))
+      .attr('fill-opacity', d => d.node.isCenter ? 1 : 0.82)
       .attr('stroke', 'hsl(var(--background))')
-      .attr('stroke-width', 1.5);
+      .attr('stroke-width', 2);
 
-    // childCount badge (when >1, shows number of merged stop_ids)
-    nodeEl.filter(d => d.node.childCount > 1)
-      .append('text')
-      .attr('class', 'badge')
-      .attr('dy', d => -nodeRadius(d) + 1)
-      .attr('dx', d => nodeRadius(d) - 1)
-      .attr('text-anchor', 'middle')
-      .attr('font-size', 8)
-      .attr('font-weight', '700')
-      .attr('fill', 'hsl(var(--background))')
-      .attr('pointer-events', 'none')
-      .text(d => `×${d.node.childCount}`);
+    // Mode dots (small squares below center indicating modes)
+    nodeEl.filter(d => d.node.modes.length > 0)
+      .each(function(d) {
+        const g = d3.select(this);
+        const r = nodeRadius(d);
+        d.node.modes.slice(0, 3).forEach((mode, i) => {
+          g.append('rect')
+            .attr('x', -4 + i * 5 - (Math.min(d.node.modes.length, 3) - 1) * 2.5)
+            .attr('y', r - 3)
+            .attr('width', 4)
+            .attr('height', 4)
+            .attr('rx', 1)
+            .attr('fill', modeColors[mode] ?? '#888')
+            .attr('pointer-events', 'none');
+        });
+      });
 
-    // Label below circle
+    // Labels
     nodeEl.append('text')
       .attr('class', 'node-label')
-      .attr('dy', d => nodeRadius(d) + 11)
+      .attr('dy', d => nodeRadius(d) + (d.node.modes.length > 0 ? 15 : 12))
       .attr('text-anchor', 'middle')
-      .attr('font-size', 10)
-      .attr('font-weight', '500')
+      .attr('font-size', d => d.node.isCenter ? 11 : 9)
+      .attr('font-weight', d => d.node.isCenter ? '700' : '500')
       .attr('fill', 'hsl(var(--foreground))')
       .attr('pointer-events', 'none')
       .text(d => {
-        const name = d.node.stopName;
-        return name.length > 24 ? name.slice(0, 22) + '…' : name;
+        const n = d.node.stopName;
+        return n.length > 20 ? n.slice(0, 18) + '…' : n;
       });
+
+    // Travel time label for non-center nodes
+    nodeEl.filter(d => !d.node.isCenter)
+      .append('text')
+      .attr('dy', d => nodeRadius(d) + (d.node.modes.length > 0 ? 24 : 21))
+      .attr('text-anchor', 'middle')
+      .attr('font-size', 8)
+      .attr('fill', 'hsl(215, 16%, 55%)')
+      .attr('pointer-events', 'none')
+      .text(d => `${Math.round(d.node.travelSeconds / 60)}min`);
 
     nodeEl.on('click', (event, d) => {
       event.stopPropagation();
@@ -357,43 +326,36 @@ const StationGraphView: React.FC<Props> = ({ gtfs }) => {
     });
 
     return () => { simRef.current?.stop(); };
-  }, [graph, handleNodeClick]);
+  }, [interGraph, viewMode, handleNodeClick]);
 
-  // Selection ring update (no full re-render)
+  // Selection ring update
   useEffect(() => {
-    if (!svgRef.current) return;
+    if (!svgRef.current || viewMode !== 'inter') return;
     d3.select(svgRef.current).selectAll<SVGCircleElement, SimNode>('.nodes g .main-circle')
       .attr('stroke', (d: SimNode) => {
         if (d.id === fromNodeId) return 'hsl(234, 90%, 65%)';
         if (d.id === toNodeId) return 'hsl(142, 71%, 45%)';
         return 'hsl(var(--background))';
       })
-      .attr('stroke-width', (d: SimNode) => (d.id === fromNodeId || d.id === toNodeId) ? 3.5 : 1.5);
-  }, [fromNodeId, toNodeId]);
+      .attr('stroke-width', (d: SimNode) => (d.id === fromNodeId || d.id === toNodeId) ? 3.5 : 2);
+  }, [fromNodeId, toNodeId, viewMode]);
 
-  const fromNode = graph?.nodes.get(fromNodeId ?? '');
-  const toNode = graph?.nodes.get(toNodeId ?? '');
-  const jesInfo = selectedJES ? jesLabel(selectedJES.normalizedScore) : null;
-  const improvements = selectedJES ? jesImprovementActions(selectedJES) : [];
-
-  const avgFriction = graph
-    ? [...graph.nodes.values()].reduce((s, n) => s + n.frictionScore, 0) / Math.max(1, graph.nodes.size)
-    : 0;
-  const criticalNodes = graph
-    ? [...graph.nodes.values()].filter(n => n.frictionScore > 0.4).length
-    : 0;
+  const fromNode = interGraph?.nodes.get(fromNodeId ?? '');
+  const toNode = interGraph?.nodes.get(toNodeId ?? '');
+  const jesInfo = interJES ? jesLabel(interJES.normalizedScore) : null;
+  const improvements = interJES ? jesImprovementActions(interJES) : [];
 
   return (
-    <div className="flex gap-4 h-[640px]">
+    <div className="flex gap-4 h-[660px]">
       {/* Graph panel */}
       <div className="flex-1 flex flex-col gap-3 min-w-0">
-        {/* Station selector */}
-        <div className="flex items-center gap-3">
+        {/* Controls */}
+        <div className="flex items-center gap-3 flex-wrap">
           <label className="text-xs font-medium text-muted-foreground whitespace-nowrap">Station :</label>
           <select
             value={selectedStationId}
             onChange={e => setSelectedStationId(e.target.value)}
-            className="flex-1 h-8 text-xs rounded-md border border-border bg-background px-2 focus:outline-none focus:ring-1 focus:ring-primary"
+            className="flex-1 min-w-0 h-8 text-xs rounded-md border border-border bg-background px-2 focus:outline-none focus:ring-1 focus:ring-primary"
           >
             {candidates.map(c => (
               <option key={c.stopId} value={c.stopId}>
@@ -401,173 +363,184 @@ const StationGraphView: React.FC<Props> = ({ gtfs }) => {
               </option>
             ))}
           </select>
+
+          <label className="text-xs font-medium text-muted-foreground whitespace-nowrap">Rayon :</label>
+          <select
+            value={maxMinutes}
+            onChange={e => setMaxMinutes(Number(e.target.value))}
+            className="w-24 h-8 text-xs rounded-md border border-border bg-background px-2 focus:outline-none focus:ring-1 focus:ring-primary"
+          >
+            {[5, 10, 15, 20, 30].map(m => (
+              <option key={m} value={m}>{m} min</option>
+            ))}
+          </select>
+
+          {hasPathways && (
+            <div className="flex rounded-md border border-border overflow-hidden text-xs">
+              <button
+                onClick={() => setViewMode('inter')}
+                className={`px-3 py-1.5 transition-colors ${viewMode === 'inter' ? 'bg-primary text-primary-foreground' : 'bg-background text-muted-foreground hover:bg-secondary'}`}
+              >
+                Réseau
+              </button>
+              <button
+                onClick={() => setViewMode('intra')}
+                className={`px-3 py-1.5 transition-colors ${viewMode === 'intra' ? 'bg-primary text-primary-foreground' : 'bg-background text-muted-foreground hover:bg-secondary'}`}
+              >
+                Physique
+              </button>
+            </div>
+          )}
         </div>
 
         {/* D3 canvas */}
         <div className="relative flex-1 rounded-md border border-border bg-card overflow-hidden">
           <svg ref={svgRef} className="w-full h-full" />
-          {(!graph || graph.nodes.size === 0) && (
-            <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
-              Aucun graphe disponible pour cette station.
+
+          {viewMode === 'inter' && (!interGraph || interGraph.nodes.size === 0) && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="text-xs text-muted-foreground text-center p-4">
+                <p className="font-medium mb-1">Aucune donnée disponible</p>
+                <p>Ce stop_id n'apparaît pas dans stop_times.</p>
+              </div>
             </div>
           )}
-          {graph && graph.nodes.size > 0 && (
+
+          {viewMode === 'inter' && interGraph && interGraph.nodes.size > 0 && (
             <div className="absolute bottom-2 left-2 text-[10px] text-muted-foreground bg-background/80 px-2 py-1 rounded">
-              Cliquer un nœud = départ · cliquer un second = destination
+              {interGraph.nodes.size} stations · {interGraph.totalStopTimesEdges} arcs stop_times
+              {interGraph.transferEdgeCount > 0 && ` · ${interGraph.transferEdgeCount} transfers`}
+              &nbsp;· Cliquer A puis B pour analyser
             </div>
           )}
         </div>
 
         {/* Legend */}
-        <div className="flex flex-wrap gap-3 text-[10px] text-muted-foreground">
-          {Object.entries(NODE_TYPE_COLOR).map(([type, color]) => (
-            <span key={type} className="flex items-center gap-1">
-              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
-              {type === 'stop' ? 'Arrêt' : type === 'station' ? 'Station' : type === 'entrance' ? 'Entrée' : type === 'generic_node' ? 'Nœud' : 'Quai'}
+        {viewMode === 'inter' && (
+          <div className="flex flex-wrap gap-3 text-[10px] text-muted-foreground">
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-2.5 h-2.5 rounded-full bg-green-500" />
+              Proche (0 min)
             </span>
-          ))}
-          <span className="flex items-center gap-1 ml-2">
-            <span className="inline-block w-4 border-t-2 border-dashed border-orange-400" />
-            Friction élevée
-          </span>
-          <span className="flex items-center gap-1 ml-2">
-            <span className="inline-block text-[9px] font-bold text-background bg-blue-500 rounded px-0.5">×N</span>
-            Stop_ids fusionnés
-          </span>
-        </div>
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-2.5 h-2.5 rounded-full bg-amber-400" />
+              Moyen
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-2.5 h-2.5 rounded-full bg-red-500" />
+              Loin ({maxMinutes} min)
+            </span>
+            <span className="flex items-center gap-1 ml-2">
+              <span className="inline-block w-5 border-t border-dashed border-purple-400" />
+              Correspondance
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="text-blue-400">⬤</span> = station centre
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Sidebar */}
       <div className="w-72 flex flex-col gap-3 overflow-y-auto">
 
-        {/* Debug panel */}
-        {debugInfo && (
-          <div className="rounded-md border border-border bg-secondary/20 p-3">
-            <div className="text-[10px] font-semibold text-muted-foreground mb-2 uppercase tracking-wide">Diagnostic graphe</div>
-            <div className="grid grid-cols-2 gap-1.5 text-[10px]">
-              <div className="flex justify-between col-span-2">
-                <span className="text-muted-foreground">Stop_ids bruts</span>
-                <span className="font-mono font-medium">{debugInfo.rawStopCount}</span>
-              </div>
-              <div className="flex justify-between col-span-2">
-                <span className="text-muted-foreground">Nœuds logiques</span>
-                <span className="font-mono font-medium">{debugInfo.groupCount}</span>
-              </div>
-              <div className="flex justify-between col-span-2">
-                <span className="text-muted-foreground">Ratio déduplication</span>
-                <span className={`font-mono font-medium ${debugInfo.dupRatio > 50 ? 'text-amber-500' : 'text-green-500'}`}>
-                  {debugInfo.dupRatio}%
-                </span>
-              </div>
-              <div className="flex justify-between col-span-2">
-                <span className="text-muted-foreground">Source</span>
-                <span className={`font-medium ${debugInfo.hasPathways ? 'text-green-500' : 'text-amber-500'}`}>
-                  {debugInfo.hasPathways ? 'pathways.txt' : 'fallback géo/transfers'}
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Station stats */}
-        {graph && (
+        {/* Stats */}
+        {interGraph && viewMode === 'inter' && (
           <div className="rounded-md border border-border bg-card p-4">
-            <h3 className="text-xs font-semibold mb-3 text-foreground">{graph.stationName}</h3>
+            <h3 className="text-xs font-semibold mb-3 text-foreground">{interGraph.centerName}</h3>
             <div className="grid grid-cols-2 gap-2 text-xs">
               <div className="bg-secondary/40 rounded p-2">
-                <div className="text-muted-foreground">Nœuds</div>
-                <div className="font-medium text-lg">{graph.nodes.size}</div>
+                <div className="text-muted-foreground">Stations</div>
+                <div className="font-medium text-lg">{interGraph.nodes.size}</div>
               </div>
               <div className="bg-secondary/40 rounded p-2">
-                <div className="text-muted-foreground">Arcs</div>
-                <div className="font-medium text-lg">{graph.edges.length}</div>
+                <div className="text-muted-foreground">Connexions</div>
+                <div className="font-medium text-lg">{interGraph.totalStopTimesEdges}</div>
               </div>
-              <div className="bg-secondary/40 rounded p-2">
-                <div className="text-muted-foreground">Friction moy.</div>
-                <div className={`font-medium text-lg ${avgFriction > 0.4 ? 'text-destructive' : avgFriction > 0.2 ? 'text-amber-500' : 'text-green-500'}`}>
-                  {(avgFriction * 100).toFixed(0)}%
-                </div>
-              </div>
-              <div className="bg-secondary/40 rounded p-2">
-                <div className="text-muted-foreground">Nœuds critiques</div>
-                <div className={`font-medium text-lg ${criticalNodes > 0 ? 'text-destructive' : 'text-green-500'}`}>
-                  {criticalNodes}
+              <div className="bg-secondary/40 rounded p-2 col-span-2">
+                <div className="text-muted-foreground">Source</div>
+                <div className="font-medium text-sm mt-0.5">
+                  {interGraph.totalStopTimesEdges > 0 ? '✓ stop_times' : '—'}
+                  {interGraph.transferEdgeCount > 0 ? ` · ${interGraph.transferEdgeCount} transfers` : ''}
+                  {hasPathways ? ' · pathways.txt' : ''}
                 </div>
               </div>
             </div>
 
-            {graph.edges.length > 0 && (
-              <div className="mt-3 pt-3 border-t border-border">
-                <div className="text-[10px] text-muted-foreground mb-2">Types de parcours</div>
-                {[...new Set(graph.edges.map(e => e.pathwayMode))].sort().map(mode => {
-                  const count = graph.edges.filter(e => e.pathwayMode === mode).length;
-                  return (
-                    <div key={mode} className="flex items-center gap-2 text-[10px] mb-1">
-                      <span className="w-2.5 h-2.5 rounded-sm inline-block flex-shrink-0"
-                        style={{ backgroundColor: PATHWAY_MODE_COLOR[mode] ?? '#888' }} />
-                      <span className="flex-1">{PATHWAY_MODE_LABEL[mode] ?? `Mode ${mode}`}</span>
-                      <span className="text-muted-foreground">{count}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            {/* Top neighbors */}
+            <div className="mt-3 pt-3 border-t border-border">
+              <div className="text-[10px] text-muted-foreground mb-2">Stations les plus proches</div>
+              {[...interGraph.nodes.values()]
+                .filter(n => !n.isCenter)
+                .sort((a, b) => a.travelSeconds - b.travelSeconds)
+                .slice(0, 5)
+                .map(n => (
+                  <button
+                    key={n.nodeId}
+                    onClick={() => handleNodeClick(n.nodeId)}
+                    className="w-full flex items-center justify-between py-1 text-[10px] hover:text-foreground text-muted-foreground transition-colors text-left"
+                  >
+                    <span className="truncate flex-1">{n.stopName}</span>
+                    <span className="ml-2 flex-shrink-0 font-medium"
+                      style={{ color: travelTimeColor(n.travelSeconds, interGraph.maxTravelSeconds) }}>
+                      {Math.round(n.travelSeconds / 60)} min
+                    </span>
+                  </button>
+                ))
+              }
+            </div>
           </div>
         )}
 
-        {/* Transfer cost + JES panel */}
-        {fromNode && (
+        {/* A → B analysis */}
+        {fromNode && viewMode === 'inter' && (
           <div className="rounded-md border border-border bg-card p-4">
-            <h3 className="text-xs font-semibold mb-3 text-foreground">Analyse de correspondance</h3>
+            <h3 className="text-xs font-semibold mb-3 text-foreground">Analyse de trajet</h3>
+
             <div className="text-[10px] space-y-2">
               <div className="flex items-start gap-2">
                 <span className="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0 mt-0.5" />
                 <div>
                   <span className="font-medium">Départ : </span>
                   <span className="text-muted-foreground">{fromNode.stopName}</span>
-                  {fromNode.childCount > 1 && (
-                    <span className="ml-1 text-muted-foreground/60">(×{fromNode.childCount} arrêts)</span>
-                  )}
+                  <div className="text-muted-foreground/60 mt-0.5">
+                    {fromNode.routeCount} ligne{fromNode.routeCount > 1 ? 's' : ''}
+                    {fromNode.isCenter ? ' · station centre' : ` · ${Math.round(fromNode.travelSeconds / 60)} min`}
+                  </div>
                 </div>
               </div>
+
               {toNode ? (
                 <div className="flex items-start gap-2">
                   <span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0 mt-0.5" />
                   <div>
                     <span className="font-medium">Arrivée : </span>
                     <span className="text-muted-foreground">{toNode.stopName}</span>
-                    {toNode.childCount > 1 && (
-                      <span className="ml-1 text-muted-foreground/60">(×{toNode.childCount} arrêts)</span>
-                    )}
+                    <div className="text-muted-foreground/60 mt-0.5">
+                      {toNode.routeCount} ligne{toNode.routeCount > 1 ? 's' : ''}
+                      {` · ${Math.round(toNode.travelSeconds / 60)} min depuis centre`}
+                    </div>
                   </div>
                 </div>
               ) : (
-                <div className="text-muted-foreground italic">Cliquer un nœud destination…</div>
+                <div className="text-muted-foreground italic">Cliquer une station de destination…</div>
               )}
             </div>
 
-            {selectedTransfer && selectedJES && jesInfo && (
+            {interJES && jesInfo && toNode && (
               <div className="mt-3 space-y-3">
                 <div className="bg-secondary/40 rounded p-3 space-y-1.5 text-[10px]">
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Marche</span>
-                    <span className="font-medium">{selectedTransfer.walkSeconds}s</span>
+                    <span className="text-muted-foreground">Temps trajet</span>
+                    <span className="font-medium">{Math.round(interJES.totalTravelSeconds / 60)} min</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Attente estimée</span>
-                    <span className="font-medium">{selectedTransfer.waitSeconds}s</span>
+                    <span className="text-muted-foreground">Correspondances</span>
+                    <span className="font-medium">{interJES.transferCount}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Pénalité friction</span>
-                    <span className={`font-medium ${selectedTransfer.frictionPenalty > 30 ? 'text-amber-500' : ''}`}>
-                      +{selectedTransfer.frictionPenalty}s
-                    </span>
-                  </div>
-                  <div className="flex justify-between border-t border-border pt-1.5 mt-1.5">
-                    <span className="font-medium">Total perçu</span>
-                    <span className="font-semibold">
-                      {selectedTransfer.totalCostSeconds}s ({Math.round(selectedTransfer.totalCostSeconds / 60)}min)
-                    </span>
+                    <span className="text-muted-foreground">Score perçu brut</span>
+                    <span className="font-medium">{Math.round(interJES.rawScore / 60)} min perçues</span>
                   </div>
                 </div>
 
@@ -575,14 +548,11 @@ const StationGraphView: React.FC<Props> = ({ gtfs }) => {
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-[10px] font-semibold">Score JES</span>
                     <span className="text-sm font-bold" style={{ color: jesInfo.color }}>
-                      {Math.round(selectedJES.normalizedScore)}/100
+                      {Math.round(interJES.normalizedScore)}/100
                     </span>
                   </div>
                   <div className="w-full h-1.5 rounded-full bg-secondary/60 overflow-hidden">
-                    <div
-                      className="h-full rounded-full transition-all"
-                      style={{ width: `${selectedJES.normalizedScore}%`, backgroundColor: jesInfo.color }}
-                    />
+                    <div className="h-full rounded-full" style={{ width: `${interJES.normalizedScore}%`, backgroundColor: jesInfo.color }} />
                   </div>
                   <div className="text-[10px] mt-1.5 font-medium" style={{ color: jesInfo.color }}>
                     {jesInfo.label}
@@ -591,12 +561,11 @@ const StationGraphView: React.FC<Props> = ({ gtfs }) => {
 
                 {improvements.length > 0 && (
                   <div>
-                    <div className="text-[10px] font-semibold mb-1.5 text-foreground">Recommandations</div>
+                    <div className="text-[10px] font-semibold mb-1.5">Recommandations</div>
                     <ul className="space-y-1">
-                      {improvements.map((action, i) => (
+                      {improvements.map((a, i) => (
                         <li key={i} className="text-[10px] text-muted-foreground flex gap-1.5">
-                          <span className="text-amber-500 flex-shrink-0">›</span>
-                          {action}
+                          <span className="text-amber-500 flex-shrink-0">›</span>{a}
                         </li>
                       ))}
                     </ul>
@@ -605,60 +574,44 @@ const StationGraphView: React.FC<Props> = ({ gtfs }) => {
               </div>
             )}
 
-            {fromNodeId && toNodeId && !selectedTransfer && (
+            {fromNodeId && toNodeId && !interJES && (
               <div className="mt-3 text-[10px] text-destructive">
-                Aucun chemin trouvé entre ces deux nœuds.
+                Aucun chemin trouvé dans le rayon sélectionné.
               </div>
             )}
           </div>
         )}
 
-        {/* Transfer costs table */}
-        {transferCosts.length > 0 && (
+        {/* Intra-station transfer costs (only in intra mode) */}
+        {viewMode === 'intra' && intraTransferCosts.length > 0 && (
           <div className="rounded-md border border-border bg-card p-4">
             <h3 className="text-xs font-semibold mb-3 text-foreground">
-              Correspondances ({transferCosts.length})
+              Correspondances physiques ({intraTransferCosts.length})
             </h3>
             <div className="space-y-1 max-h-48 overflow-y-auto">
-              {transferCosts.slice(0, 20).map((c, i) => {
+              {intraTransferCosts.slice(0, 15).map((c, i) => {
                 const jes = computeJES([c.fromStopId, c.toStopId], 0, [c]);
                 const label = jesLabel(jes.normalizedScore);
-                const isSelected = c.fromStopId === fromNodeId && c.toStopId === toNodeId;
                 return (
-                  <button
-                    key={i}
-                    onClick={() => { setFromNodeId(c.fromStopId); setToNodeId(c.toStopId); }}
-                    className={`w-full text-left rounded px-2 py-1.5 text-[10px] transition-colors ${
-                      isSelected ? 'bg-primary/10 ring-1 ring-primary/30' : 'hover:bg-secondary/50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-muted-foreground flex-1">
-                        {graph?.nodes.get(c.fromStopId)?.stopName ?? c.fromStopId}
-                        {' → '}
-                        {graph?.nodes.get(c.toStopId)?.stopName ?? c.toStopId}
-                      </span>
-                      <span className="flex-shrink-0 font-medium" style={{ color: label.color }}>
-                        {Math.round(jes.normalizedScore)}
-                      </span>
-                    </div>
-                    <div className="text-muted-foreground/70 mt-0.5">
-                      {c.walkSeconds}s marche · {c.waitSeconds}s attente
-                    </div>
-                  </button>
+                  <div key={i} className="flex items-center justify-between text-[10px] py-1 border-b border-border/50 last:border-0">
+                    <span className="text-muted-foreground truncate flex-1">
+                      {c.fromStopId} → {c.toStopId}
+                    </span>
+                    <span className="ml-2 font-medium" style={{ color: label.color }}>
+                      {c.walkSeconds}s · JES {Math.round(jes.normalizedScore)}
+                    </span>
+                  </div>
                 );
               })}
             </div>
           </div>
         )}
 
-        {graph && graph.nodes.size <= 1 && (
+        {/* No data fallback */}
+        {viewMode === 'inter' && interGraph && interGraph.nodes.size <= 1 && (
           <div className="rounded-md border border-border bg-card p-4 text-xs text-muted-foreground">
-            <p className="font-medium mb-1">Données intra-station insuffisantes</p>
-            <p>
-              Ce GTFS ne contient pas de <code>pathways.txt</code> ni de <code>transfers.txt</code> pour
-              cette station. Le graphe ne peut pas être construit.
-            </p>
+            <p className="font-medium mb-1">Station introuvable dans stop_times</p>
+            <p>Ce stop_id n'apparaît ni directement ni via ses enfants dans les horaires. Vérifier que le GTFS contient bien des stop_times pour cette station.</p>
           </div>
         )}
       </div>
