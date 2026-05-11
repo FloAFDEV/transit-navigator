@@ -576,8 +576,16 @@ const StationGraphView: React.FC<Props> = ({ gtfs }) => {
                       <div className="rounded p-3"
                         style={{ backgroundColor: `${jesInfo.color}18`, border: `1px solid ${jesInfo.color}40` }}>
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-[10px] font-semibold">Score JES</span>
-                          <span className="text-sm font-bold" style={{ color: jesInfo.color }}>
+<span
+  className="text-[10px] font-semibold cursor-help relative group"
+  aria-label="Score JES : Journey Event System, modèle GTFS simplifié basé sur les temps de transport"
+>
+  Score JES
+
+  <span className="absolute left-1/2 -translate-x-1/2 top-5 hidden group-hover:block text-[10px] font-normal bg-black text-white px-2 py-1 rounded whitespace-nowrap z-50">
+    Journey Event System — modèle basé sur temps de trajet (GTFS simplifié)
+  </span>
+</span>                          <span className="text-sm font-bold" style={{ color: jesInfo.color }}>
                             {Math.round(jesResult.normalizedScore)}/100
                           </span>
                         </div>
