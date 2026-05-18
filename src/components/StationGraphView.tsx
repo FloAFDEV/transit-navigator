@@ -26,6 +26,7 @@ import { analyzeNetworkConnectivity, componentColor, CAUSE_LABELS } from '@/lib/
 import { findShortestPath, dijkstraFrom, type PathResult } from '@/lib/path-dijkstra';
 import { computeJES, jesLabel } from '@/lib/jes';
 import { modeColors, modeLabels } from '@/lib/gtfs-types';
+import { findAlternativeJourneys, type AlternativeJourney } from '@/lib/journey-alternatives';
 
 // ─── Color helpers ────────────────────────────────────────────────────────────
 
@@ -69,6 +70,7 @@ const StationGraphView: React.FC<Props> = ({ gtfs }) => {
   const [destId, setDestId] = useState<string | null>(null);
   const [interGraph, setInterGraph] = useState<InterStationGraph | null>(null);
   const [showDiagnostic, setShowDiagnostic] = useState(false);
+  const [showAlternatives, setShowAlternatives] = useState(false);
 
   const candidates = useMemo(() => getStationCandidates(gtfs, 30), [gtfs]);
   const routeNames = useMemo(
@@ -102,6 +104,12 @@ const StationGraphView: React.FC<Props> = ({ gtfs }) => {
     if (!interGraph || !originId || !destId) return null;
     return findShortestPath(interGraph, originId, destId);
   }, [interGraph, originId, destId]);
+
+  // Alternative journeys (only when path shown)
+  const alternatives = useMemo((): AlternativeJourney[] => {
+    if (!interGraph || !originId || !destId || selState !== 'path-shown') return [];
+    return findAlternativeJourneys(interGraph, originId, destId, routeNames, 3);
+  }, [interGraph, originId, destId, selState, routeNames]);
 
   // JES for the path
   const jesResult = useMemo(() => {
@@ -636,6 +644,68 @@ const StationGraphView: React.FC<Props> = ({ gtfs }) => {
                   </div>
                 )}
               </>
+            )}
+          </div>
+        )}
+
+        {/* Alternative journeys comparison */}
+        {selState === 'path-shown' && alternatives.length > 1 && (
+          <div className="rounded-md border border-border bg-card p-4">
+            <button
+              onClick={() => setShowAlternatives(v => !v)}
+              className="w-full flex items-center justify-between text-xs font-semibold text-foreground"
+            >
+              <span>Comparer les options ({alternatives.length})</span>
+              <span className="text-muted-foreground">{showAlternatives ? '▲' : '▼'}</span>
+            </button>
+
+            {showAlternatives && (
+              <div className="mt-3 space-y-2">
+                {alternatives.map((alt, i) => {
+                  const info = jesLabel(alt.jes.normalizedScore);
+                  return (
+                    <div key={alt.id}
+                      className={`rounded-lg border p-3 text-[10px] ${alt.isOptimal ? 'border-primary/40 bg-primary/5' : 'border-border bg-secondary/20'}`}
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="font-semibold text-foreground">
+                          {alt.isOptimal ? 'Optimal' : `Option ${i}`}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          {!alt.isOptimal && alt.timeDeltaPct !== 0 && (
+                            <span className={`font-mono ${alt.timeDeltaPct > 0 ? 'text-amber-500' : 'text-green-500'}`}>
+                              {alt.timeDeltaPct > 0 ? '+' : ''}{alt.timeDeltaPct}%
+                            </span>
+                          )}
+                          <span className="font-bold" style={{ color: info.color }}>
+                            JES {Math.round(alt.jes.normalizedScore)}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1.5 mb-1.5 text-center">
+                        <div className="bg-background/60 rounded px-1 py-1">
+                          <div className="text-muted-foreground">Temps</div>
+                          <div className="font-medium">{Math.round(alt.path.totalSeconds / 60)} min</div>
+                        </div>
+                        <div className="bg-background/60 rounded px-1 py-1">
+                          <div className="text-muted-foreground">Correspond.</div>
+                          <div className="font-medium">{alt.path.transferCount}</div>
+                        </div>
+                        <div className="bg-background/60 rounded px-1 py-1">
+                          <div className="text-muted-foreground">Étapes</div>
+                          <div className="font-medium">{alt.path.hops}</div>
+                        </div>
+                      </div>
+                      {alt.path.usedRouteIds.length > 0 && (
+                        <div className="text-muted-foreground mb-1">
+                          Lignes : {alt.path.usedRouteIds.slice(0, 4).map(id => routeNames.get(id) ?? id).join(', ')}
+                        </div>
+                      )}
+                      <div className="italic text-muted-foreground/70">{alt.comment}</div>
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
         )}

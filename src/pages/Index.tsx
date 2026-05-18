@@ -11,6 +11,7 @@ import SignageGuide from '@/components/SignageGuide';
 import StationGraphView from '@/components/StationGraphView';
 import RouteDetailPanel from '@/components/RouteDetailPanel';
 import GlossaryPanel from '@/components/GlossaryPanel';
+import AnalysisGuidePanel from '@/components/AnalysisGuidePanel';
 import PdfExportButton from '@/components/PdfExportButton';
 import PresentationView from '@/components/PresentationView';
 import GlobalSearch from '@/components/GlobalSearch';
@@ -220,7 +221,7 @@ const Index: React.FC = () => {
     { key: 'friction',     label: 'Points de congestion',   desc: 'Stations complexes à forte charge — potentiels goulets d\'étranglement' },
     { key: 'isochrone',    label: 'Accessibilité en temps', desc: 'Depuis un arrêt, quelles zones peut-on atteindre en X minutes ?' },
     { key: 'dependencies', label: 'Analyse stratégique',    desc: 'Hubs critiques, stations fragiles et opportunités de développement' },
-    { key: 'station',      label: 'Graphe intra-station',   desc: 'Nœuds, parcours internes, coûts de correspondance et score JES par station' },
+    { key: 'station',      label: 'Connectivité réseau',    desc: 'Graphe inter-stations, composantes connexes, chemins optimaux et JES — source : stop_times GTFS' },
   ];
 
   const modes: (TransportMode | 'all')[] = ['all', 'bus', 'metro', 'tram', 'train', 'cable'];
@@ -229,7 +230,7 @@ const Index: React.FC = () => {
     <div className="min-h-screen bg-background">
       <header className="border-b border-border px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <h1 className="text-sm font-semibold text-foreground tracking-tight">GTFS Analyzer</h1>
+          <h1 className="text-sm font-semibold text-foreground tracking-tight">GTFS Network Analyzer</h1>
           <span className="text-xs text-muted-foreground font-mono">{fileName}</span>
           <GlobalSearch
             index={searchIndex}
@@ -257,6 +258,7 @@ const Index: React.FC = () => {
           </Select>
         </div>
         <div className="flex items-center gap-2">
+          <AnalysisGuidePanel />
           <GlossaryPanel />
           <button
             onClick={handleExportPng}
