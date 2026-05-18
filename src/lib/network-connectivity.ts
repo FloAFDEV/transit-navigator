@@ -227,3 +227,176 @@ export const CAUSE_LABELS: Record<string, { label: string; color: string }> = {
   missing_transfers:        { label: 'Correspondances manquantes', color: 'hsl(0, 72%, 55%)' },
   parent_station_mismatch:  { label: 'Désalignement parent_station', color: 'hsl(24, 90%, 52%)' },
 };
+
+// ─── Strategic connectivity ────────────────────────────────────────────────
+
+import type { StrategicGraph } from './strategic-graph';
+
+export type StrategicIsolationCause =
+  | 'missing_transfers'
+  | 'parent_station_fragmentation'
+  | 'isolated_route'
+  | 'gtfs_data_gap'
+  | 'true_network_island';
+
+export interface StrategicIsolatedCluster {
+  size: number;
+  stations: string[];   // station names
+  stationIds: string[]; // node ids
+  probableCause: StrategicIsolationCause;
+}
+
+export interface StrategicConnectivityDiagnostic {
+  connectedComponents: number;
+  mainComponentSize: number;
+  orphanStations: string[];
+  isolatedClusters: StrategicIsolatedCluster[];
+  componentMap: Map<string, number>; // nodeId → componentId (0 = main)
+  geoInferredEdges: number;
+}
+
+export const STRATEGIC_CAUSE_LABELS: Record<string, { label: string; color: string }> = {
+  missing_transfers:            { label: 'Correspondances manquantes',   color: 'hsl(0, 72%, 55%)' },
+  parent_station_fragmentation: { label: 'Fragmentation parent_station', color: 'hsl(24, 90%, 52%)' },
+  isolated_route:               { label: 'Ligne isolée',                  color: 'hsl(38, 92%, 50%)' },
+  gtfs_data_gap:                { label: 'Manque de données GTFS',       color: 'hsl(215, 16%, 50%)' },
+  true_network_island:          { label: 'Îlot réseau réel',              color: 'hsl(280, 60%, 55%)' },
+};
+
+/** Assign componentId to each node in the strategic graph based on componentMap */
+function assignComponentIds(
+  graph: StrategicGraph,
+  componentMap: Map<string, number>,
+): void {
+  for (const node of graph.nodes.values()) {
+    node.componentId = componentMap.get(node.id) ?? 0;
+  }
+}
+
+function strategicCentroid(
+  nodeIds: string[],
+  graph: StrategicGraph,
+): { lat: number; lon: number } | null {
+  let sumLat = 0, sumLon = 0, count = 0;
+  for (const id of nodeIds) {
+    const n = graph.nodes.get(id);
+    if (n && isFinite(n.lat) && isFinite(n.lon) && !(n.lat === 0 && n.lon === 0)) {
+      sumLat += n.lat; sumLon += n.lon; count++;
+    }
+  }
+  return count > 0 ? { lat: sumLat / count, lon: sumLon / count } : null;
+}
+
+function classifyStrategicIsolation(
+  nodeIds: string[],
+  graph: StrategicGraph,
+  gtfs: ParsedGtfs,
+  mainCentroid: { lat: number; lon: number } | null,
+): StrategicIsolationCause {
+  const nodes = nodeIds.map(id => graph.nodes.get(id)!).filter(Boolean);
+
+  // 1. GTFS data gap: none of the nodes have any stop_times edges
+  const hasStopTimesEdge = nodes.some(n => {
+    return (graph.adjacency.get(n.id) ?? []).some(e => e.source === 'stop_times');
+  });
+  if (!hasStopTimesEdge) return 'gtfs_data_gap';
+
+  // 2. Isolated route: all nodes serve exactly 1 distinct route
+  const allRoutes = new Set<string>();
+  for (const n of nodes) for (const r of n.routeIds) allRoutes.add(r);
+  if (allRoutes.size === 1) return 'isolated_route';
+
+  // 3. Parent station fragmentation: nodes share names with nodes in other components
+  const clusterNames = new Set(nodes.map(n => n.name.toLowerCase()));
+  let hasDuplicate = false;
+  for (const other of graph.nodes.values()) {
+    if (nodeIds.includes(other.id)) continue;
+    if (clusterNames.has(other.name.toLowerCase())) { hasDuplicate = true; break; }
+  }
+  if (hasDuplicate) return 'parent_station_fragmentation';
+
+  // 4. True network island: centroid > 20km from main component
+  const centroid = strategicCentroid(nodeIds, graph);
+  if (centroid && mainCentroid) {
+    const dist = haversineKm(centroid.lat, centroid.lon, mainCentroid.lat, mainCentroid.lon);
+    if (dist > 20) return 'true_network_island';
+  }
+
+  return 'missing_transfers';
+}
+
+export function analyzeStrategicConnectivity(
+  graph: StrategicGraph,
+  gtfs: ParsedGtfs,
+): StrategicConnectivityDiagnostic {
+  // BFS on adjacency to find connected components
+  const visited = new Map<string, number>();
+  const componentMembers: string[][] = [];
+
+  for (const nodeId of graph.nodes.keys()) {
+    if (visited.has(nodeId)) continue;
+    const compId = componentMembers.length;
+    const members: string[] = [];
+    const queue = [nodeId];
+    visited.set(nodeId, compId);
+    while (queue.length > 0) {
+      const curr = queue.shift()!;
+      members.push(curr);
+      for (const edge of graph.adjacency.get(curr) ?? []) {
+        const neighbor = edge.from === curr ? edge.to : edge.from;
+        if (!visited.has(neighbor)) {
+          visited.set(neighbor, compId);
+          queue.push(neighbor);
+        }
+      }
+    }
+    componentMembers.push(members);
+  }
+
+  // Sort by size descending (largest = index 0)
+  const sorted = componentMembers
+    .map((members, originalId) => ({ members, originalId }))
+    .sort((a, b) => b.members.length - a.members.length);
+
+  // Build componentMap (nodeId → new componentId where 0 = largest)
+  const componentMap = new Map<string, number>();
+  for (let newId = 0; newId < sorted.length; newId++) {
+    for (const id of sorted[newId].members) componentMap.set(id, newId);
+  }
+
+  // Assign componentId to graph nodes
+  assignComponentIds(graph, componentMap);
+
+  const mainMembers = sorted[0]?.members ?? [];
+  const mainCentroid = strategicCentroid(mainMembers, graph);
+
+  const orphanStations: string[] = [];
+  const isolatedClusters: StrategicIsolatedCluster[] = [];
+
+  for (let newId = 1; newId < sorted.length; newId++) {
+    const { members } = sorted[newId];
+    const stationNames = members.map(id => graph.nodes.get(id)?.name ?? id);
+
+    if (members.length === 1 && (graph.adjacency.get(members[0])?.length ?? 0) === 0) {
+      orphanStations.push(stationNames[0]);
+      continue;
+    }
+
+    const probableCause = classifyStrategicIsolation(members, graph, gtfs, mainCentroid);
+    isolatedClusters.push({
+      size: members.length,
+      stations: stationNames,
+      stationIds: members,
+      probableCause,
+    });
+  }
+
+  return {
+    connectedComponents: sorted.length,
+    mainComponentSize: sorted[0]?.members.length ?? 0,
+    orphanStations: orphanStations.slice(0, 20),
+    isolatedClusters: isolatedClusters.slice(0, 50),
+    componentMap,
+    geoInferredEdges: 0, // strategic graph never adds geo edges
+  };
+}
