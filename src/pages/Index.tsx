@@ -229,7 +229,10 @@ const Index: React.FC = () => {
     <div className="min-h-screen bg-background">
       <header className="border-b border-border px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <h1 className="text-sm font-semibold text-foreground tracking-tight">GTFS Analyzer</h1>
+          <h1 className="text-sm font-semibold text-foreground tracking-tight flex items-center gap-2">
+            <img src="/favicon.svg" alt="" className="w-5 h-5" />
+            Transit Navigator
+          </h1>
           <span className="text-xs text-muted-foreground font-mono">{fileName}</span>
           <GlobalSearch
             index={searchIndex}
